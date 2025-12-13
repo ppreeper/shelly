@@ -13,13 +13,18 @@ func write(f *os.File, content string) {
 	}
 }
 
+func (cfg *ShellyCfg) shellGenCommands() {
+	// if no commands then write root command
+	if len(cfg.Commands) == 0 {
+		cfg.commandFunc("root")
+		return
+	}
+	for _, command := range cfg.Commands {
+		cfg.commandFunc(command.Name)
+	}
+}
+
 func (cfg *ShellyCfg) shellGen() {
-	fmt.Println(prettyprint(cfg))
-	fmt.Println("creating user files in src")
-
-	// write main script content
-	cfg.commandFunc("root")
-
 	// compile the final script
 	var permissions os.FileMode = 0o755
 	filename := fmt.Sprintf("./%s", cfg.Name)

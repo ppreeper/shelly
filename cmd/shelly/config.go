@@ -10,9 +10,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type Dependency struct {
+	Name    string `json:"name" yaml:"name"`
+	Version string `json:"version,omitempty" yaml:"version,omitempty"`
+	Help    string `json:"help,omitempty" yaml:"help,omitempty"`
+}
+
 type EnvironmentVariable struct {
-	Name string `json:"name" yaml:"name"`
-	Help string `json:"help,omitempty" yaml:"help,omitempty"`
+	Name     string `json:"name" yaml:"name"`
+	Help     string `json:"help,omitempty" yaml:"help,omitempty"`
+	Required bool   `json:"required,omitempty" yaml:"required,omitempty"`
 }
 
 type Flag struct {
@@ -41,6 +48,7 @@ type ShellyCfg struct {
 	Name                 string                `yaml:"name"`
 	Help                 string                `yaml:"help"`
 	Version              string                `yaml:"version"`
+	Dependencies         []string              `json:"dependencies,omitempty" yaml:"dependencies,omitempty"`
 	EnvironmentVariables []EnvironmentVariable `json:"environment_variables,omitempty" yaml:"environment_variables,omitempty"`
 	Commands             []Command             `json:"commands,omitempty" yaml:"commands,omitempty"`
 	Args                 []Arg                 `json:"args,omitempty" yaml:"args,omitempty"`

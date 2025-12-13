@@ -31,6 +31,12 @@ go.work.sum
 # .idea/
 # .vscode/
 
-src/
+tmp/
 cli
 gup
+
+bashlygen/cli
+bashlygen/**/*sh
+
+shellygen/cli
+shellygen/**/*sh

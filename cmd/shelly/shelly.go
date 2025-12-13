@@ -88,6 +88,10 @@ func (app *App) Generate() *cobra.Command {
 				fmt.Println("Error: could not read configuration file")
 				return
 			}
+			fmt.Println(prettyprint(shellyCfg))
+			// Generate commands
+			shellyCfg.shellGenCommands()
+			// Generate main script
 			shellyCfg.shellGen()
 		},
 	}
