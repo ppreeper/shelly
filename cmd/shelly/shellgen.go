@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 func write(f *os.File, content string) {
@@ -24,11 +26,21 @@ func (cfg *ShellyCfg) shellGenCommands() {
 	}
 }
 
+// readSrcOrDefault reads a file under ./src/ if it exists, otherwise returns def
+func readSrcOrDefault(name, def string) string {
+	p := filepath.Join("src", name)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return def
+	}
+	return string(b)
+}
+
 func (cfg *ShellyCfg) shellGen() {
 	// compile the final script
 	var permissions os.FileMode = 0o755
 	filename := fmt.Sprintf("./%s", cfg.Name)
-	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, permissions)
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, permissions)
 	if err != nil {
 		fmt.Println("Error creating shell script file:", err)
 		return
@@ -38,58 +50,96 @@ func (cfg *ShellyCfg) shellGen() {
 	// write shebang
 	write(f, cfg.shebang()+"\n\n")
 
-	write(f, "# :command.master_script"+"\n\n")
-	write(f, "# :command.version_command\nversion_command() {\n\techo \"$version\"\n}"+"\n\n")
+	// version command
+	versionDef := "version_command() {\n\techo \"$version\"\n}\n"
+	write(f, "# :command.version_command\n")
+	write(f, readSrcOrDefault("version_command.sh", versionDef)+"\n\n")
 
-	// usage section
-	write(f, "# :command.usage\n"+cfg.Name+"_usage() {}"+"\n\n")
-	write(f, "# :command.usage\n"+cfg.Name+"_install_usage() {}"+"\n\n")
-	write(f, "# :command.usage\n"+cfg.Name+" for each sub command"+"\n\n")
+	// usage
+	usageDef := fmt.Sprintf("%s_usage() {\n\tcat <<'USAGE'\nUsage: %s [COMMAND] [OPTIONS]\nUSAGE\n}\n", cfg.Name, cfg.Name)
+	usage := strings.ReplaceAll(readSrcOrDefault("usage.sh", usageDef), "%APP_NAME%", cfg.Name)
+	write(f, "# :command.usage\n")
+	write(f, usage+"\n\n")
 
 	// normalize input
-	write(f, "# :command.normalize_input"+"\n")
-	write(f, "# :command.normalize_input_function"+"\n")
-	write(f, "normalize_input() {\n"+"}\n\n")
+	normalizeDef := "normalize_input() {\n  newargs=\"\"\n  for arg in \"$@\"; do\n    case \"$arg\" in\n      --*=*) newargs=\"$newargs ${arg%%=*} ${arg#*=}\" ;;\n      *) newargs=\"$newargs $arg\" ;;\n    esac\n  done\n  set -- $newargs\n}\n"
+	normalize := strings.ReplaceAll(readSrcOrDefault("normalize_input.sh", normalizeDef), "%APP_NAME%", cfg.Name)
+	write(f, "# :command.normalize_input\n")
+	write(f, normalize+"\n\n")
 
 	// inspect args
-	write(f, "# :command.inspect_args"+"\n")
-	write(f, "inspect_args() {\n"+"}\n\n")
+	inspectDef := "inspect_args() {\n  # Validate positional args and flags\n  return 0\n}\n"
+	inspect := strings.ReplaceAll(readSrcOrDefault("inspect_args.sh", inspectDef), "%APP_NAME%", cfg.Name)
+	write(f, "# :command.inspect_args\n")
+	write(f, inspect+"\n\n")
 
-	// command functions
-	write(f, "# :command.command_functions\n\n")
-	write(f, "# :# :command.function\n\n")
-	write(f, cfg.Name+"_install_gup_command() {\n# src/command_command.sh\n# input from cmd_command.sh\n}\n\n")
+	// parse requirements
+	parseDef := "parse_requirements() {\n  # Check environment, dependencies\n  return 0\n}\n"
+	parse := strings.ReplaceAll(readSrcOrDefault("parse_requirements.sh", parseDef), "%APP_NAME%", cfg.Name)
+	write(f, "# :command.parse_requirements\n")
+	write(f, parse+"\n\n")
 
-	// command parse_requirements
-	write(f, "# :command.parse_requirements"+"\n")
-	write(f, "parse_requirements() {\n"+"}\n\n")
+	// command helper functions
+	cmdFuncsDef := "# helper functions\n"
+	cmdFuncs := strings.ReplaceAll(readSrcOrDefault("command_functions.sh", cmdFuncsDef), "%APP_NAME%", cfg.Name)
+	write(f, "# :command.command_functions\n")
+	write(f, cmdFuncs+"\n\n")
 
-	write(f, "# :command.parse_requirements"+"\n")
-	write(f, cfg.Name+"_install_parse_requirements() {\n"+"}\n\n")
+	// per-command functions
+	if len(cfg.Commands) == 0 {
+		// if no commands, write root command function
+		rootDef := fmt.Sprintf("root() {\n  # default root command\n  %s_usage\n}\n", cfg.Name)
+		write(f, "# :command.root\n")
+		write(f, rootDef+"\n\n")
+	} else {
+		for _, cmd := range cfg.Commands {
+			srcpath := filepath.Join("src", fmt.Sprintf("%s_command.sh", cmd.Name))
+			b, err := os.ReadFile(srcpath)
+			var content string
+			if err != nil {
+				content = fmt.Sprintf("# This file is located at 'src/%s_command.sh'.\n# Implementation for the '%s' command.\n# The code you write here will be included into the generated script.\n\n%s_command() {\n  # TODO: implement %s command\n  inspect_args\n  parse_requirements\n  return 0\n}\n", cmd.Name, cmd.Name, cmd.Name, cmd.Name)
+				// write skeleton file so user can edit it later
+				_ = cfg.writeCommand(fmt.Sprintf("src/%s_command.sh", cmd.Name), content)
+			} else {
+				content = string(b)
+			}
+			content = strings.ReplaceAll(content, "%APP_NAME%", cfg.Name)
+			write(f, "# :command.function "+cmd.Name+"\n")
+			write(f, content+"\n\n")
+		}
+	}
 
-	// :command.initialize
-	write(f, "# :command.initialize\n"+"initialize() {\n\tversion="+cfg.Version+"\n\tset -e\n}\n\n")
+	// run function: dispatcher
+	var runBuilder strings.Builder
+	runBuilder.WriteString("run() {\n")
+	runBuilder.WriteString("  normalize_input \"$@\"\n")
+	runBuilder.WriteString("  if [ $# -eq 0 ]; then\n")
+	runBuilder.WriteString(fmt.Sprintf("    %s_usage\n    return 0\n", cfg.Name))
+	runBuilder.WriteString("  fi\n")
+	runBuilder.WriteString("  cmd=$1; shift\n")
+	runBuilder.WriteString("  case \"$cmd\" in\n")
+	for _, c := range cfg.Commands {
+		runBuilder.WriteString(fmt.Sprintf("    %s) %s_command \"$@\" ;;\n", c.Name, c.Name))
+		if c.Alias != "" {
+			runBuilder.WriteString(fmt.Sprintf("    %s) %s_command \"$@\" ;;\n", c.Alias, c.Name))
+		}
+	}
+	runBuilder.WriteString("    -h|--help) " + cfg.Name + "_usage ;;\n")
+	runBuilder.WriteString("    *) echo \"Unknown command: $cmd\"; " + cfg.Name + "_usage; exit 2 ;;\n")
+	runBuilder.WriteString("  esac\n")
+	runBuilder.WriteString("}\n")
+	runDef := strings.ReplaceAll(readSrcOrDefault("run_wrapper.sh", runBuilder.String()), "%APP_NAME%", cfg.Name)
+	write(f, "# :command.run\n")
+	write(f, runDef+"\n\n")
 
-	// :command.run
-	write(f, "# :command.run\n"+"run() {\n}\n\n")
-
-	// :command.start
+	// start wrapper
+	startDef := "case \"$0\" in\n\t*/*) script_name=${0##*/} ;;\n\t*) script_name=$0 ;;\n esac\n\nif [ \"$script_name\" = \"$(basename \"$0\")\" ]; then\n\tcommand_line_args=\"$@\"\n\tinitialize\n\trun \"$@\"\nfi\n"
+	start := strings.ReplaceAll(readSrcOrDefault("start.sh", startDef), "%APP_NAME%", cfg.Name)
 	write(f, "# :command.start\n")
-	write(f, "case \"$0\" in\n")
-	write(f, "\t*/*) script_name=${0##*/} ;;\n")
-	write(f, "\t*)   script_name=$0 ;;\n")
-	write(f, "esac"+"\n\n")
-	write(f, "if [ \"$script_name\" = \"$(basename \"$0\")\" ]; then\n")
-	write(f, "\t# :command.start\n")
-	write(f, "\tcommand_line_args=\"$@\"\n")
-	write(f, "\tinitialize\n")
-	write(f, "\trun \"$@\"\n")
-	write(f, "fi\n")
+	write(f, start+"\n\n")
 
-	fmt.Printf("created ./%s.sh\n", cfg.Name)
-
-	// final message
-	fmt.Printf("run ./%s --help to test your bash script\n", cfg.Name)
+	fmt.Printf("created ./%s\n", cfg.Name)
+	fmt.Printf("run ./%s --help to test your script\n", cfg.Name)
 }
 
 func (cfg *ShellyCfg) shebang() string {
@@ -97,15 +147,10 @@ func (cfg *ShellyCfg) shebang() string {
 }
 
 func (cfg *ShellyCfg) commandFunc(command string) {
-	filecontent := fmt.Sprintf("echo \"# This file is located at 'src/%s_command.sh'.\n"+
-		"echo \"# It contains the implementation for the '%s' command.\"\n"+
-		"echo \"# The code you write here will be wrapped by a function named '%s_command()'.\"\n"+
-		"echo \"# Feel free to edit this file; your changes will persist when regenerating.\"\n"+
-		"inspect_args\n",
-		command, command, command)
+	filecontent := fmt.Sprintf("# This file is located at 'src/%s_command.sh'.\n# It contains the implementation for the '%s' command.\n# The code you write here will be included into the generated script.\n\n%s_command() {\n  # parse command-specific flags and args\n  inspect_args\n  parse_requirements\n  return 0\n}\n", command, command, command)
 	filename := fmt.Sprintf("src/%s_command.sh", command)
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		cfg.writeCommand("src/"+command+"_command.sh", filecontent)
+		_ = cfg.writeCommand("src/"+command+"_command.sh", filecontent)
 	}
 }
 

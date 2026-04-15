@@ -40,5 +40,3 @@ func prettyprint(i any) string {
 	}
 	return string(ymlData)
 }
-
-
