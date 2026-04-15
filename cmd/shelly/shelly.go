@@ -29,7 +29,7 @@ func main() {
 	rootCmd.AddCommand(app.Preview())
 	rootCmd.AddCommand(app.Validate())
 	rootCmd.AddCommand(app.Generate())
-	// rootCmd.AddCommand(app.Add())
+	rootCmd.AddCommand(app.Add())
 	if err := fang.Execute(context.Background(), rootCmd); err != nil {
 		fmt.Println("Error executing command:", err)
 		os.Exit(1)
@@ -78,23 +78,38 @@ func (app *App) Validate() *cobra.Command {
 }
 
 func (app *App) Generate() *cobra.Command {
+	var strict bool
+	var verbose bool
 	cmd := &cobra.Command{
 		Use:     "generate",
 		Aliases: []string{"g"},
 		Short:   "Generate the bash script and required files",
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			shellyCfg := readConfig()
 			if shellyCfg == nil {
-				fmt.Println("Error: could not read configuration file")
-				return
+				return fmt.Errorf("Error: could not read configuration file")
 			}
-			fmt.Println(prettyprint(shellyCfg))
+			if verbose {
+				fmt.Println(prettyprint(shellyCfg))
+			}
 			// Generate commands
 			shellyCfg.shellGenCommands()
 			// Generate main script
-			shellyCfg.shellGen()
+			if err := shellyCfg.shellGen(); err != nil {
+				return fmt.Errorf("generate failed: %w", err)
+			}
+
+			// run shellcheck if requested
+			if strict {
+				if err := runShellcheck(fmt.Sprintf("./%s", shellyCfg.Name), strict); err != nil {
+					return fmt.Errorf("shellcheck failed: %w", err)
+				}
+			}
+			return nil
 		},
 	}
+	cmd.Flags().BoolVarP(&strict, "strict", "s", false, "Run shellcheck and fail on any diagnostics (requires shellcheck installed)")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show the shelly configuration file prior to generating")
 	return cmd
 }
 
@@ -103,8 +118,28 @@ func (app *App) Preview() *cobra.Command {
 		Use:   "preview",
 		Short: "Generate the bash script to STDOUT",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("preview")
+			shellyCfg := readConfig()
+			if shellyCfg == nil {
+				return fmt.Errorf("could not read configuration file")
+			}
+			out, err := shellyCfg.shellGenToString()
+			if err != nil {
+				return fmt.Errorf("preview failed: %w", err)
+			}
+			fmt.Print(out)
 			return nil
+		},
+	}
+	return cmd
+}
+
+func (app *App) Add() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "add <addon>",
+		Short: "Add a built-in addon to the project (validations, colors, hooks)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return addAddon(args[0])
 		},
 	}
 	return cmd
