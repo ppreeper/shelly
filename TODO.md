@@ -22,31 +22,17 @@ Items are grouped by impact. Check off as implemented.
 
 ## Medium Impact (missing ergonomics)
 
-- [ ] **Alias wildcard dispatch** — `alias: "d*"` is collected verbatim by `allAliases()` but never emitted as a shell glob pattern in the `case` dispatcher. A `d*` pattern in a POSIX `case` statement is valid and should be emitted as-is.
-
-- [ ] **Short-only flags** — `Flag.Long` is effectively required; a flag with only a `-f` short form cannot be expressed. The flag parser and usage generator need to handle `Long == ""` with only `Short` set.
-
 - [x] **`show_examples_on_error`** — when a required arg is missing, the error path calls `<cmd>_usage` (which may not include examples in its output path). Add a setting to show the examples block specifically in the required-arg error message.
 
 - [x] **`help_header_override`** — per-app and per-command field that emits a custom block at the top of the usage function, replacing the default `echo "<name> - <help>"` line.
 
-- [ ] **`shelly add --list`** — no way to discover available addons. Add a `--list` flag to `shelly add` that prints the addon catalogue.
+- [x] **`catch_all.required`** — logic implemented (`generateFlagParser` trims `other_args` and errors if empty when `Required: true`); tests: `TestCatchAllRequired`, `TestCatchAllRequiredDefaultLabel`.
 
-- [ ] **`shelly add yaml`** — scaffold `src/lib/yaml.sh` with a minimal POSIX YAML/key-value parser helper.
-
-- [ ] **`shelly add config`** — scaffold `src/lib/config.sh` with INI-style config file read/write helpers.
-
-- [ ] **`shelly add ini`** — scaffold `src/lib/ini.sh` with low-level INI section/key parsing helpers.
+- [x] **`environment_variables.default`** — logic implemented (`generateEnvCheck` emits `: "${VAR:=default}"`); tests: `TestEnvVarDefault`, `TestEnvVarDefaultPerCommand`.
 
 ---
 
 ## Low Impact / Infrastructure
-
-- [ ] **`settings.yml` concept** — all paths are hardcoded (`src/`, `src/lib/`, output to `./`). Add an optional `src/settings.yml` (or `shelly-settings.yml`) that controls:
-  - `source_dir` (default: `src`)
-  - `target_dir` (default: `.`)
-  - `lib_dir` (default: `src/lib`)
-  - `partials_extension` (default: `sh`)
 
 - [x] **`formatter` post-processing** — after generation, optionally run `shfmt` (or a custom command) on the output. Add `formatter: shfmt` (or `none` / `internal`) to settings.
 
@@ -54,11 +40,23 @@ Items are grouped by impact. Check off as implemented.
 
 - [x] **`enable_view_markers` toggle** — `# :command.*` section markers are always emitted. Add a settings flag (`disable_view_markers: true`) to suppress them for cleaner production output.
 
-- [ ] **`generate --env production`** — slim/production mode that strips `inspect_args`, view markers, and debug hooks from the generated script.
+- [x] **`generate --env production`** — slim/production mode that strips `inspect_args`, view markers, and debug hooks from the generated script. Mirrors bashly's `env: production` setting.
 
-- [ ] **`inspect_args()` dev utility** — the current stub is a no-op. In dev mode it should print all parsed variable values (`$flagname`, `$argname`, `$other_args`) to stderr for debugging. Could be wired to `SHELLY_DEBUG=1`.
+- [x] **`inspect_args()` dev utility** — the current stub is a no-op. In dev mode it should print all parsed variable values (`$flagname`, `$argname`, `$other_args`) to stderr for debugging. Could be wired to `SHELLY_DEBUG=1`. Mirrors bashly's `enable_inspect_args` setting.
 
-- [ ] **`generate --upgrade`** — re-scaffold any addon lib files that have changed (currently `addAddon` errors if the file already exists; upgrade should overwrite with the latest built-in content).
+- [x] **`generate --upgrade`** — re-scaffold any addon lib files that have changed (currently `addAddon` errors if the file already exists; upgrade should overwrite with the latest built-in content).
+
+- [x] **`tab_indent` setting** — generated scripts use 2-space indentation. Add `tab_indent: true` to switch to hard tabs (matches bashly's `tab_indent` setting).
+
+- [x] **`enable_header_comment` toggle** — optionally suppress the "do not modify" / generation header comment at the top of the generated script.
+
+- [x] **`usage_colors` settings** — emit ANSI color codes in usage output for section captions, commands, args, flags, and env vars. Requires color-safe `echo` helper; keys: `caption`, `command`, `arg`, `flag`, `environment_variable`. POSIX-compatible subset only (no `tput` assumptions).
+
+- [x] **`function_names` overrides** — allow renaming internal generated functions `run()` and `initialize()` via `function_names.run` and `function_names.initialize` settings.
+
+- [x] **`var_aliases` settings** — allow renaming the public `other_args` variable via `var_aliases.other_args`. Useful to avoid collisions in large scripts.
+
+- [x] **`help` multiline support** — bashly treats the first line of a multiline `help:` value as the summary and subsequent lines as extended description shown in full usage. Shelly currently emits the entire string as a single `echo` line.
 
 ---
 
@@ -72,3 +70,9 @@ These are bashly features that shelly deliberately does not implement:
 - **Bash3 bouncer / sourcing guard** — bash-specific syntax (`[[ ]]`).
 - **`bashly render`** (markdown/man page generation) — out of scope.
 - **`generate --watch`** — filesystem watcher not yet implemented (no watcher dep in go.mod).
+- **`enable_bash3_bouncer`** — bash-specific.
+- **`enable_sourcing` guard** — uses `[[ "${BASH_SOURCE[0]}" == "$0" ]]`, bash-specific.
+- **`enable_deps_array` / `enable_env_var_names_array`** — relies on bash associative arrays.
+- **`compact_short_flags` / `conjoined_flag_args` normalization** — shelly's `normalize_input()` already handles `-abc` expansion and `--flag=value` splitting; these are always-on.
+- **`watch_evented` / `watch_latency`** — watcher not implemented.
+- **`var_aliases.args` / `var_aliases.deps`** — `$args` associative array excluded above.

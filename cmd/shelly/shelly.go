@@ -80,6 +80,7 @@ func (app *App) Validate() *cobra.Command {
 func (app *App) Generate() *cobra.Command {
 	var strict bool
 	var verbose bool
+	var env string
 	cmd := &cobra.Command{
 		Use:     "generate",
 		Aliases: []string{"g"},
@@ -91,6 +92,10 @@ func (app *App) Generate() *cobra.Command {
 			}
 			if verbose {
 				fmt.Println(prettyprint(shellyCfg))
+			}
+			// --env flag overrides config file value
+			if env != "" {
+				shellyCfg.Env = env
 			}
 			// Generate commands
 			shellyCfg.shellGenCommands()
@@ -110,6 +115,7 @@ func (app *App) Generate() *cobra.Command {
 	}
 	cmd.Flags().BoolVarP(&strict, "strict", "s", false, "Run shellcheck and fail on any diagnostics (requires shellcheck installed)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show the shelly configuration file prior to generating")
+	cmd.Flags().StringVarP(&env, "env", "e", "", "Override generation environment (e.g. production)")
 	return cmd
 }
 
@@ -134,13 +140,15 @@ func (app *App) Preview() *cobra.Command {
 }
 
 func (app *App) Add() *cobra.Command {
+	var upgrade bool
 	cmd := &cobra.Command{
 		Use:   "add <addon>",
 		Short: "Add a built-in addon to the project (validations, colors, hooks)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return addAddon(args[0])
+			return addAddon(args[0], upgrade)
 		},
 	}
+	cmd.Flags().BoolVarP(&upgrade, "upgrade", "u", false, "Overwrite existing addon files")
 	return cmd
 }

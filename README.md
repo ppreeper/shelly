@@ -202,6 +202,18 @@ environment_variables:
     private: true            # hidden from --help output
 ```
 
+### Variables
+
+Script-level shell variables set during `initialize()`:
+
+```yaml
+variables:
+  - name: base_url
+    value: https://api.example.com
+  - name: timeout
+    value: "30"
+```
+
 ### Dependencies
 
 ```yaml
@@ -267,6 +279,18 @@ commands:
 private_reveal_key: MYAPP_REVEAL
 ```
 
+Private flags and env vars use the same reveal mechanism:
+
+```yaml
+flags:
+  - long: --trace
+    private: true
+
+environment_variables:
+  - name: DEBUG_TOKEN
+    private: true
+```
+
 ### Strict Mode
 
 ```yaml
@@ -307,10 +331,32 @@ commands:
 
   - name: remote
     help: Manage remotes
-    expose: true   # lists remote's subcommands in root --help
+    expose: true     # lists remote's subcommands in root --help
+    # expose: always # also shows subcommand listing when remote is called with no args
     commands:
       - name: add
       - name: remove
+```
+
+### Catch-All Extra Arguments
+
+```yaml
+commands:
+  - name: run
+    help: Run a command
+    catch_all:
+      label: cmd         # how extra args are shown in usage
+      help: Command and arguments to run
+      required: true     # fail if no extra args given
+      catch_help: true   # pass --help through instead of triggering usage
+```
+
+Simple form (no sub-fields needed):
+
+```yaml
+commands:
+  - name: exec
+    catch_all: true
 ```
 
 ### Filters
@@ -323,6 +369,45 @@ commands:
 ```
 
 `filter_logged_in` and `filter_has_config` are functions in `src/lib/` — if they print any output, the command is blocked.
+
+### Custom Function Name
+
+Override the generated function base name (useful to avoid naming collisions):
+
+```yaml
+commands:
+  - name: list
+    function: do_list
+```
+
+### Show Examples on Error
+
+Display the command's examples block when a required arg or flag is missing:
+
+```yaml
+commands:
+  - name: deploy
+    show_examples_on_error: true
+    args:
+      - name: env
+        required: true
+    examples:
+      - deploy production
+      - deploy staging --dry-run
+```
+
+### Custom Help Header
+
+Replace the default `<appname> <cmd> - <help>` line at the top of a usage function:
+
+```yaml
+# root-level override
+help_header_override: "mytool v2 — the fast way to ship"
+
+commands:
+  - name: deploy
+    help_header_override: "deploy — push to any environment"
+```
 
 ### Hooks
 
@@ -340,6 +425,32 @@ shelly add hooks
 ### Header
 
 Place custom content (copyright, generation notice) in `src/header.sh` — it is injected after the shebang.
+
+---
+
+## Settings
+
+The following fields on the root config control generation behavior:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `word_wrap` | int | `0` | Wrap help text at this column width in usage output. `0` disables wrapping. |
+| `formatter` | string | `""` | Post-process the generated script. `"shfmt"` runs `shfmt -w`; `"none"` or empty skips. |
+| `disable_view_markers` | bool | `false` | Suppress `# :command.*` section markers in the generated script. |
+| `strict` | bool | `false` | Emit `set -euo pipefail; IFS=$'\n\t'` instead of `set -e`. |
+| `private_reveal_key` | string | `SHELLY_PRIVATE_REVEAL` | Env var name that reveals private commands, flags, and env vars in `--help`. |
+
+Example:
+
+```yaml
+name: mytool
+version: 0.1.0
+word_wrap: 100
+formatter: shfmt
+disable_view_markers: true
+strict: true
+private_reveal_key: MYTOOL_DEBUG
+```
 
 ---
 
@@ -376,7 +487,7 @@ shelly add hooks
 | `src/lib/*.sh` | Wrapped as `<stem>() { ... }` in topological order |
 | `src/<name>_command.sh` | Command body (no function wrapper) |
 
-Use `%APP_NAME%` and `%VERSION%` as substitution tokens in any override file.
+Use `%APP_NAME%` as a substitution token in any override file.
 
 ---
 
@@ -389,6 +500,7 @@ Use `%APP_NAME%` and `%VERSION%` as substitution tokens in any override file.
 - `--help` / `-h` prints usage; `--version` prints version
 - Library functions are emitted in callee-before-caller order (topological sort)
 - Duplicate library function names are a fatal error
+- Generated scripts pass `shellcheck -s sh`
 
 ---
 

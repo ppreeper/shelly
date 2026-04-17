@@ -1962,7 +1962,7 @@ func TestAddValidations(t *testing.T) {
 	os.Chdir(dir)
 	os.MkdirAll("src/lib", 0o755)
 
-	if err := addAddon("validations"); err != nil {
+	if err := addAddon("validations", false); err != nil {
 		t.Fatalf("addAddon validations: %v", err)
 	}
 	b, err := os.ReadFile("src/lib/validations.sh")
@@ -1989,7 +1989,7 @@ func TestAddColors(t *testing.T) {
 	os.Chdir(dir)
 	os.MkdirAll("src/lib", 0o755)
 
-	if err := addAddon("colors"); err != nil {
+	if err := addAddon("colors", false); err != nil {
 		t.Fatalf("addAddon colors: %v", err)
 	}
 	b, err := os.ReadFile("src/lib/colors.sh")
@@ -2010,7 +2010,7 @@ func TestAddHooks(t *testing.T) {
 	os.Chdir(dir)
 	os.MkdirAll("src", 0o755)
 
-	if err := addAddon("hooks"); err != nil {
+	if err := addAddon("hooks", false); err != nil {
 		t.Fatalf("addAddon hooks: %v", err)
 	}
 	if _, err := os.Stat("src/before.sh"); err != nil {
@@ -2023,7 +2023,7 @@ func TestAddHooks(t *testing.T) {
 
 // TestAddUnknown: unknown addon returns an error.
 func TestAddUnknown(t *testing.T) {
-	if err := addAddon("nonexistent"); err == nil {
+	if err := addAddon("nonexistent", false); err == nil {
 		t.Fatal("expected error for unknown addon")
 	}
 }
@@ -2967,5 +2967,443 @@ func TestFormatterUnknown(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown formatter") {
 		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+// TestCatchAllRequired: catch_all with Required:true errors when no extra args provided.
+func TestCatchAllRequired(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{
+		Name:    "mytool",
+		Version: "0.1.0",
+		Commands: []Command{
+			{
+				Name: "run",
+				Help: "Run something",
+				CatchAll: &CatchAllConfig{
+					Label:    "targets",
+					Required: true,
+				},
+			},
+		},
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	s := readGenerated(t, "mytool")
+
+	// find the run_parse_flags function body
+	start := strings.Index(s, "run_parse_flags()")
+	if start == -1 {
+		t.Fatal("missing run_parse_flags()")
+	}
+	end := strings.Index(s[start:], "\nrun_command()")
+	if end == -1 {
+		end = len(s) - start
+	}
+	body := s[start : start+end]
+
+	// must trim leading space from other_args
+	if !strings.Contains(body, `other_args="${other_args# }"`) {
+		t.Fatal("missing other_args trim")
+	}
+	// must check other_args is non-empty and error with label
+	if !strings.Contains(body, `[ -z "${other_args}" ]`) {
+		t.Fatal("missing required other_args check")
+	}
+	if !strings.Contains(body, "Error: <targets> is required") {
+		t.Fatal("missing required error message with label")
+	}
+	// must call usage on error
+	if !strings.Contains(body, "mytool_run_usage") {
+		t.Fatal("missing usage call in required catch_all error path")
+	}
+}
+
+// TestCatchAllRequiredDefaultLabel: catch_all Required:true with no label uses "extra".
+func TestCatchAllRequiredDefaultLabel(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{
+		Name:    "mytool",
+		Version: "0.1.0",
+		Commands: []Command{
+			{Name: "run", CatchAll: &CatchAllConfig{Required: true}},
+		},
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	s := readGenerated(t, "mytool")
+	if !strings.Contains(s, "Error: <extra> is required") {
+		t.Fatal("missing default label 'extra' in required catch_all error message")
+	}
+}
+
+// TestEnvVarDefault: environment variable with Default emits := assignment in initialize().
+func TestEnvVarDefault(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{
+		Name:    "mytool",
+		Version: "0.1.0",
+		EnvironmentVariables: []EnvironmentVariable{
+			{Name: "LOG_LEVEL", Default: "info", Help: "Log level"},
+		},
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	s := readGenerated(t, "mytool")
+
+	// default injection must appear somewhere in the script
+	if !strings.Contains(s, `: "${LOG_LEVEL:=info}"`) {
+		t.Fatal("missing default injection for LOG_LEVEL")
+	}
+}
+
+// TestEnvVarDefaultPerCommand: per-command env var default injected in command body.
+func TestEnvVarDefaultPerCommand(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{
+		Name:    "mytool",
+		Version: "0.1.0",
+		Commands: []Command{
+			{
+				Name: "deploy",
+				EnvironmentVariables: []EnvironmentVariable{
+					{Name: "DEPLOY_ENV", Default: "staging", Help: "Target environment"},
+				},
+			},
+		},
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	s := readGenerated(t, "mytool")
+
+	// default injection must appear inside deploy_command
+	start := strings.Index(s, "deploy_command()")
+	if start == -1 {
+		t.Fatal("missing deploy_command()")
+	}
+	body := s[start:]
+	if !strings.Contains(body, `: "${DEPLOY_ENV:=staging}"`) {
+		t.Fatal("missing default injection for DEPLOY_ENV in deploy_command")
+	}
+}
+
+// ─── Item 5: DisableHeaderComment ────────────────────────────────────────────
+
+func TestDisableHeaderComment(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	cfg := &ShellyCfg{Name: "myapp", Version: "1.0.0", DisableHeaderComment: true}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if strings.Contains(out, "generated by shelly") {
+		t.Fatal("expected no header comment when DisableHeaderComment=true")
+	}
+	if !strings.HasPrefix(out, "#!/usr/bin/env sh\n") {
+		t.Fatalf("expected shebang-only first line, got: %q", out[:40])
+	}
+}
+
+func TestHeaderCommentPresent(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	cfg := &ShellyCfg{Name: "myapp", Version: "1.0.0"}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if !strings.Contains(out, "generated by shelly") {
+		t.Fatal("expected header comment by default")
+	}
+}
+
+// ─── Item 7: function_names ───────────────────────────────────────────────────
+
+func TestFunctionNamesRun(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	cfg := &ShellyCfg{Name: "myapp", Version: "1.0.0", FunctionNames: FunctionNames{Run: "dispatch", Initialize: "setup"}}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if !strings.Contains(out, "dispatch() {") {
+		t.Fatal("expected renamed run function 'dispatch()'")
+	}
+	if !strings.Contains(out, "setup() {") {
+		t.Fatal("expected renamed initialize function 'setup()'")
+	}
+	if !strings.Contains(out, "setup\ndispatch") {
+		t.Fatalf("expected start section to call setup then dispatch")
+	}
+	if strings.Contains(out, "\nrun() {") {
+		t.Fatal("expected no default 'run()' function when renamed")
+	}
+}
+
+// ─── Item 8: var_aliases / other_args ────────────────────────────────────────
+
+func TestVarAliasesOtherArgs(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	cfg := &ShellyCfg{
+		Name: "myapp", Version: "1.0.0",
+		VarAliases: VarAliases{OtherArgs: "extra_args"},
+		Commands: []Command{
+			{Name: "do", Help: "do stuff", CatchAll: &CatchAllConfig{Label: "args"}},
+		},
+	}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if !strings.Contains(out, "extra_args=") {
+		t.Fatal("expected 'extra_args' variable from var_aliases")
+	}
+	if strings.Contains(out, "other_args=") {
+		t.Fatal("expected no default 'other_args' when renamed")
+	}
+}
+
+// ─── Item 4: tab_indent ───────────────────────────────────────────────────────
+
+func TestTabIndent(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	os.WriteFile("src/root_command.sh", []byte("echo hello\n"), 0o644)
+	cfg := &ShellyCfg{Name: "myapp", Version: "1.0.0", TabIndent: true}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	// lib body lines should be tab-indented
+	if !strings.Contains(out, "\techo hello") {
+		t.Fatal("expected tab-indented body line")
+	}
+}
+
+// ─── Item 1/2: production mode ───────────────────────────────────────────────
+
+func TestProductionModeNoInspectArgs(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	cfg := &ShellyCfg{Name: "myapp", Version: "1.0.0", Env: "production"}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if strings.Contains(out, "inspect_args()") {
+		t.Fatal("expected no inspect_args in production mode")
+	}
+}
+
+func TestProductionModeNoMarkers(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	cfg := &ShellyCfg{Name: "myapp", Version: "1.0.0", Env: "production"}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if strings.Contains(out, "# :command.") {
+		t.Fatal("expected no view markers in production mode")
+	}
+}
+
+func TestDevModeInspectArgs(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	cfg := &ShellyCfg{Name: "myapp", Version: "1.0.0"}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if !strings.Contains(out, "inspect_args()") {
+		t.Fatal("expected inspect_args in dev mode")
+	}
+}
+
+// ─── Item 2: inspect_args dev utility with vars ───────────────────────────────
+
+func TestInspectArgsIncludesVars(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	cfg := &ShellyCfg{
+		Name: "myapp", Version: "1.0.0",
+		Commands: []Command{
+			{Name: "deploy", Help: "deploy", Flags: []Flag{{Long: "--env", Arg: "env"}}, Args: []Arg{{Name: "target"}}},
+		},
+	}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if !strings.Contains(out, "env") || !strings.Contains(out, "target") {
+		t.Fatal("expected inspect_args to reference flag/arg var names")
+	}
+}
+
+// ─── Item 6: usage_colors ────────────────────────────────────────────────────
+
+func TestAnsiCode(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{"red", "\\033[31m"},
+		{"green", "\\033[32m"},
+		{"blue", "\\033[34m"},
+		{"bold", "\\033[1m"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := ansiCode(tt.name)
+		if got != tt.want {
+			t.Errorf("ansiCode(%q) = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestUsageColorsCaption(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	cfg := &ShellyCfg{
+		Name: "myapp", Version: "1.0.0",
+		UsageColors: UsageColors{Caption: "bold"},
+		Commands: []Command{
+			{Name: "run", Help: "run stuff"},
+		},
+	}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if !strings.Contains(out, "\\033[1m") {
+		t.Fatal("expected ANSI bold code in usage output")
+	}
+}
+
+// ─── Item 9: help multiline ───────────────────────────────────────────────────
+
+func TestHelpMultilineRoot(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	cfg := &ShellyCfg{Name: "myapp", Version: "1.0.0", Help: "first line\nsecond line\nthird line"}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if !strings.Contains(out, `myapp - first line`) {
+		t.Fatal("expected first help line as summary")
+	}
+	if !strings.Contains(out, `"second line"`) {
+		t.Fatal("expected second help line as separate echo")
+	}
+}
+
+func TestHelpMultilineCommand(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	cfg := &ShellyCfg{
+		Name: "myapp", Version: "1.0.0",
+		Commands: []Command{
+			{Name: "deploy", Help: "deploy stuff\nMore details here"},
+		},
+	}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	// command listing should show only first line
+	if !strings.Contains(out, "deploy stuff") {
+		t.Fatal("expected first help line in command listing")
+	}
+	// usage function should have extra echo for second line
+	if !strings.Contains(out, `"More details here"`) {
+		t.Fatal("expected second help line as separate echo in command usage")
+	}
+}
+
+// ─── Item 3: add --upgrade support ───────────────────────────────────────────
+
+func TestAddAddonUpgrade(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src/lib", 0o755)
+
+	// first write — should succeed
+	if err := addAddon("colors", false); err != nil {
+		t.Fatalf("first addAddon: %v", err)
+	}
+	// second write without upgrade — should fail
+	if err := addAddon("colors", false); err == nil {
+		t.Fatal("expected error on second addAddon without upgrade")
+	}
+	// third write with upgrade — should succeed
+	if err := addAddon("colors", true); err != nil {
+		t.Fatalf("addAddon with upgrade: %v", err)
 	}
 }

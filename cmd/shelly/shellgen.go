@@ -61,6 +61,11 @@ func stemName(path string) string {
 
 // indentBody indents every non-empty line with two spaces unless already indented.
 func indentBody(body string) string {
+	return indentBodyWith(body, "  ")
+}
+
+// indentBodyWith indents every non-empty line with the given indent string unless already indented.
+func indentBodyWith(body string, indent string) string {
 	lines := strings.Split(body, "\n")
 	out := make([]string, 0, len(lines))
 	for _, l := range lines {
@@ -69,15 +74,41 @@ func indentBody(body string) string {
 		} else if l[0] == ' ' || l[0] == '\t' {
 			out = append(out, l)
 		} else {
-			out = append(out, "  "+l)
+			out = append(out, indent+l)
 		}
 	}
 	return strings.Join(out, "\n")
 }
 
+// indentBody is the cfg-aware version that uses cfg.indent() for tab_indent support.
+func (cfg *ShellyCfg) indentBody(body string) string {
+	return indentBodyWith(body, cfg.indent())
+}
+
 // sanitizeVarName strips leading dashes and replaces inner dashes with underscores.
 func sanitizeVarName(long string) string {
 	return strings.ReplaceAll(strings.TrimLeft(long, "-"), "-", "_")
+}
+
+// flagVarName returns the shell variable name for a flag.
+// Prefers Long; falls back to Short when Long is empty.
+func flagVarName(f Flag) string {
+	if f.Long != "" {
+		return sanitizeVarName(f.Long)
+	}
+	return sanitizeVarName(f.Short)
+}
+
+// flagDisplayName returns the human-readable flag name for usage and error messages.
+// When both Long and Short are set: "-s, --long"; when only Short: "-s"; when only Long: "--long".
+func flagDisplayName(f Flag) string {
+	if f.Short != "" && f.Long != "" {
+		return f.Short + ", " + f.Long
+	}
+	if f.Short != "" {
+		return f.Short
+	}
+	return f.Long
 }
 
 // wrapText wraps s at word boundaries so each line is at most width runes.
@@ -118,6 +149,45 @@ func quoteShellList(vals []string) string {
 	return strings.Join(quoted, " ")
 }
 
+// ansiCode maps a color name to a POSIX printf ANSI escape sequence fragment.
+// If name is already a raw escape (starts with \033 or \e), it is returned as-is.
+// Returns "" if name is empty or unrecognised.
+func ansiCode(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "red":
+		return "\\033[31m"
+	case "green":
+		return "\\033[32m"
+	case "yellow":
+		return "\\033[33m"
+	case "blue":
+		return "\\033[34m"
+	case "magenta":
+		return "\\033[35m"
+	case "cyan":
+		return "\\033[36m"
+	case "bold":
+		return "\\033[1m"
+	case "dim":
+		return "\\033[2m"
+	case "":
+		return ""
+	default:
+		// pass raw sequences through
+		return name
+	}
+}
+
+// colorEcho returns a shell echo/printf line that wraps text with an ANSI color.
+// When colorName is empty, falls back to plain echo.
+func colorEcho(indent, colorName, text string) string {
+	code := ansiCode(colorName)
+	if code == "" {
+		return fmt.Sprintf("%secho \"%s\"\n", indent, text)
+	}
+	return fmt.Sprintf("%sprintf '%s%%s\\033[0m\\n' \"%s\"\n", indent, code, text)
+}
+
 // ─── Usage generation ────────────────────────────────────────────────────────
 
 func generateRootUsage(cfg *ShellyCfg) string {
@@ -126,7 +196,13 @@ func generateRootUsage(cfg *ShellyCfg) string {
 	if cfg.HelpHeaderOverride != "" {
 		b.WriteString(fmt.Sprintf("  echo \"%s\"\n", cfg.HelpHeaderOverride))
 	} else {
-		b.WriteString(fmt.Sprintf("  echo \"%s - %s\"\n", cfg.Name, cfg.Help))
+		helpLines := strings.SplitN(cfg.Help, "\n", 2)
+		b.WriteString(fmt.Sprintf("  echo \"%s - %s\"\n", cfg.Name, helpLines[0]))
+		if len(helpLines) > 1 {
+			for _, l := range strings.Split(helpLines[1], "\n") {
+				b.WriteString(fmt.Sprintf("  echo \"%s\"\n", l))
+			}
+		}
 	}
 	b.WriteString("  echo \"\"\n")
 	if len(cfg.Commands) > 0 {
@@ -152,9 +228,9 @@ func generateRootUsage(cfg *ShellyCfg) string {
 		for _, g := range groupOrder {
 			cmds := groupMap[g]
 			if g != "" {
-				b.WriteString(fmt.Sprintf("  echo \"%s:\"\n", g))
+				b.WriteString(colorEcho("  ", cfg.UsageColors.Caption, g+":"))
 			} else {
-				b.WriteString("  echo \"Commands:\"\n")
+				b.WriteString(colorEcho("  ", cfg.UsageColors.Caption, "Commands:"))
 			}
 			for _, c := range cmds {
 				aliases := c.allAliases()
@@ -162,12 +238,14 @@ func generateRootUsage(cfg *ShellyCfg) string {
 				if len(aliases) > 0 {
 					aliasStr = " (" + strings.Join(aliases, ", ") + ")"
 				}
-				b.WriteString(fmt.Sprintf("  echo \"  %-20s %s%s\"\n", c.Name, c.Help, aliasStr))
+				helpLine := strings.SplitN(c.Help, "\n", 2)[0]
+				b.WriteString(fmt.Sprintf("  echo \"  %-20s %s%s\"\n", c.Name, helpLine, aliasStr))
 				// if expose:true or expose:always, also list immediate subcommands in root help
 				if c.Expose.IsEnabled() {
 					for _, sub := range c.Commands {
 						if !sub.Private {
-							b.WriteString(fmt.Sprintf("  echo \"  %-20s %s\"\n", c.Name+" "+sub.Name, sub.Help))
+							subHelp := strings.SplitN(sub.Help, "\n", 2)[0]
+							b.WriteString(fmt.Sprintf("  echo \"  %-20s %s\"\n", c.Name+" "+sub.Name, subHelp))
 						}
 					}
 				}
@@ -197,8 +275,8 @@ func generateRootUsage(cfg *ShellyCfg) string {
 		}
 		b.WriteString(fmt.Sprintf("  echo \"Usage: %s%s [options]\"\n", cfg.Name, argStr))
 		b.WriteString("  echo \"\"\n")
-		writeArgsHelp(&b, cfg.Args, cfg.WordWrap)
-		writeFlagsHelp(&b, cfg.Flags, cfg.WordWrap, cfg.privateRevealEnvVar())
+		writeArgsHelp(&b, cfg.Args, cfg.UsageColors.Caption, cfg.WordWrap)
+		writeFlagsHelp(&b, cfg.Flags, cfg.UsageColors.Caption, cfg.WordWrap, cfg.privateRevealEnvVar())
 	}
 	b.WriteString(fmt.Sprintf("  echo \"  %-20s %s\"\n", "--help, -h", "Show this help"))
 	b.WriteString(fmt.Sprintf("  echo \"  %-20s %s\"\n", "--version", "Show version"))
@@ -210,7 +288,7 @@ func generateRootUsage(cfg *ShellyCfg) string {
 		}
 	}
 	if len(cfg.EnvironmentVariables) > 0 {
-		writeEnvVarsHelp(&b, cfg.EnvironmentVariables, cfg.WordWrap, cfg.privateRevealEnvVar())
+		writeEnvVarsHelp(&b, cfg.EnvironmentVariables, cfg.UsageColors.Caption, cfg.WordWrap, cfg.privateRevealEnvVar())
 	}
 	if cfg.Footer != "" {
 		b.WriteString("  echo \"\"\n")
@@ -220,13 +298,19 @@ func generateRootUsage(cfg *ShellyCfg) string {
 	return b.String()
 }
 
-func generateCommandUsage(appName string, cmd Command, revealKey string, wordWrap int) string {
+func generateCommandUsage(appName string, cmd Command, revealKey string, wordWrap int, colors UsageColors) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("%s_%s_usage() {\n", appName, cmd.Name))
 	if cmd.HelpHeaderOverride != "" {
 		b.WriteString(fmt.Sprintf("  echo \"%s\"\n", cmd.HelpHeaderOverride))
 	} else {
-		b.WriteString(fmt.Sprintf("  echo \"%s %s - %s\"\n", appName, cmd.Name, cmd.Help))
+		helpLines := strings.SplitN(cmd.Help, "\n", 2)
+		b.WriteString(fmt.Sprintf("  echo \"%s %s - %s\"\n", appName, cmd.Name, helpLines[0]))
+		if len(helpLines) > 1 {
+			for _, l := range strings.Split(helpLines[1], "\n") {
+				b.WriteString(fmt.Sprintf("  echo \"%s\"\n", l))
+			}
+		}
 	}
 	b.WriteString("  echo \"\"\n")
 
@@ -241,8 +325,8 @@ func generateCommandUsage(appName string, cmd Command, revealKey string, wordWra
 	b.WriteString(fmt.Sprintf("  echo \"Usage: %s %s%s [options]\"\n", appName, cmd.Name, argStr))
 	b.WriteString("  echo \"\"\n")
 
-	writeArgsHelp(&b, cmd.Args, wordWrap)
-	writeFlagsHelp(&b, cmd.Flags, wordWrap, revealKey)
+	writeArgsHelp(&b, cmd.Args, colors.Caption, wordWrap)
+	writeFlagsHelp(&b, cmd.Flags, colors.Caption, wordWrap, revealKey)
 
 	b.WriteString(fmt.Sprintf("  echo \"  %-20s %s\"\n", "--help, -h", "Show this help"))
 
@@ -254,7 +338,7 @@ func generateCommandUsage(appName string, cmd Command, revealKey string, wordWra
 		}
 	}
 	if len(cmd.EnvironmentVariables) > 0 {
-		writeEnvVarsHelp(&b, cmd.EnvironmentVariables, wordWrap, revealKey)
+		writeEnvVarsHelp(&b, cmd.EnvironmentVariables, colors.Caption, wordWrap, revealKey)
 	}
 	if cmd.CatchAll != nil && cmd.CatchAll.CatchHelp && cmd.CatchAll.Help != "" {
 		b.WriteString("  echo \"\"\n")
@@ -273,7 +357,7 @@ func generateCommandUsage(appName string, cmd Command, revealKey string, wordWra
 	return b.String()
 }
 
-func writeArgsHelp(b *strings.Builder, args []Arg, wordWrap ...int) {
+func writeArgsHelp(b *strings.Builder, args []Arg, captionColor string, wordWrap ...int) {
 	if len(args) == 0 {
 		return
 	}
@@ -284,7 +368,7 @@ func writeArgsHelp(b *strings.Builder, args []Arg, wordWrap ...int) {
 	// prefix: "  %-20s " = 2 + 20 + 1 = 23 chars
 	const prefixLen = 23
 	const indent = "  " + "                     " // 2 + 21 spaces = 23 chars
-	b.WriteString("  echo \"Arguments:\"\n")
+	b.WriteString(colorEcho("  ", captionColor, "Arguments:"))
 	for _, a := range args {
 		req := ""
 		if a.Required {
@@ -314,7 +398,7 @@ func writeArgsHelp(b *strings.Builder, args []Arg, wordWrap ...int) {
 	b.WriteString("  echo \"\"\n")
 }
 
-func writeFlagsHelp(b *strings.Builder, flags []Flag, wordWrap int, revealKey string) {
+func writeFlagsHelp(b *strings.Builder, flags []Flag, captionColor string, wordWrap int, revealKey string) {
 	if len(flags) == 0 {
 		return
 	}
@@ -322,7 +406,7 @@ func writeFlagsHelp(b *strings.Builder, flags []Flag, wordWrap int, revealKey st
 	const prefixLen = 27
 	const indent = "  " + "                          " // 2 + 25 spaces = 27 chars
 
-	b.WriteString("  echo \"Options:\"\n")
+	b.WriteString(colorEcho("  ", captionColor, "Options:"))
 	for _, f := range flags {
 		if f.Private {
 			continue
@@ -393,46 +477,62 @@ func writeFlagsHelp(b *strings.Builder, flags []Flag, wordWrap int, revealKey st
 // generateFlagParser builds <cmd>_parse_flags() with:
 //   - long/short boolean and value flags
 //   - repeatable flags (counter for boolean, accumulate for value)
-//   - catch_all: remaining non-flag args accumulated into other_args
+//   - catch_all: remaining non-flag args accumulated into other_args (or cfg.otherArgsVar())
 //   - default value injection after the loop
 //   - required flag check after defaults
 //   - allowed value check after required
 //   - conflicts check (mutual exclusion)
 //   - needs check (co-requirement)
-func generateFlagParser(appName string, cmd Command) string {
+func (cfg *ShellyCfg) generateFlagParser(appName string, cmd Command) string {
+	otherArgs := cfg.otherArgsVar()
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("%s_parse_flags() {\n", cmd.Name))
 
 	// initialise other_args if catch_all is set
 	if cmd.CatchAll != nil {
-		b.WriteString("  other_args=\"\"\n")
+		b.WriteString(fmt.Sprintf("  %s=\"\"\n", otherArgs))
 	}
 
 	b.WriteString("  while [ $# -gt 0 ]; do\n")
 	b.WriteString("    case \"$1\" in\n")
 	for _, f := range cmd.Flags {
+		// Derive varName: prefer Long, fall back to Short (strip leading -)
 		varName := sanitizeVarName(f.Long)
+		if varName == "" && f.Short != "" {
+			varName = sanitizeVarName(f.Short)
+		}
 		if f.Arg != "" {
-			b.WriteString(fmt.Sprintf("      %s=*) %s=\"${1#*=}\"; shift ;;\n", f.Long, varName))
+			// --flag=value inline form only available for long flags
+			if f.Long != "" {
+				b.WriteString(fmt.Sprintf("      %s=*) %s=\"${1#*=}\"; shift ;;\n", f.Long, varName))
+			}
 			if f.Repeatable {
-				b.WriteString(fmt.Sprintf("      %s) %s=\"${%s} $2\"; shift 2 ;;\n", f.Long, varName, varName))
+				if f.Long != "" {
+					b.WriteString(fmt.Sprintf("      %s) %s=\"${%s} $2\"; shift 2 ;;\n", f.Long, varName, varName))
+				}
 				if f.Short != "" {
 					b.WriteString(fmt.Sprintf("      %s) %s=\"${%s} $2\"; shift 2 ;;\n", f.Short, varName, varName))
 				}
 			} else {
-				b.WriteString(fmt.Sprintf("      %s) %s=\"$2\"; shift 2 ;;\n", f.Long, varName))
+				if f.Long != "" {
+					b.WriteString(fmt.Sprintf("      %s) %s=\"$2\"; shift 2 ;;\n", f.Long, varName))
+				}
 				if f.Short != "" {
 					b.WriteString(fmt.Sprintf("      %s) %s=\"$2\"; shift 2 ;;\n", f.Short, varName))
 				}
 			}
 		} else {
 			if f.Repeatable {
-				b.WriteString(fmt.Sprintf("      %s) %s=$((${%s:-0}+1)); shift ;;\n", f.Long, varName, varName))
+				if f.Long != "" {
+					b.WriteString(fmt.Sprintf("      %s) %s=$((${%s:-0}+1)); shift ;;\n", f.Long, varName, varName))
+				}
 				if f.Short != "" {
 					b.WriteString(fmt.Sprintf("      %s) %s=$((${%s:-0}+1)); shift ;;\n", f.Short, varName, varName))
 				}
 			} else {
-				b.WriteString(fmt.Sprintf("      %s) %s=1; shift ;;\n", f.Long, varName))
+				if f.Long != "" {
+					b.WriteString(fmt.Sprintf("      %s) %s=1; shift ;;\n", f.Long, varName))
+				}
 				if f.Short != "" {
 					b.WriteString(fmt.Sprintf("      %s) %s=1; shift ;;\n", f.Short, varName))
 				}
@@ -441,14 +541,14 @@ func generateFlagParser(appName string, cmd Command) string {
 	}
 	// help: when catch_help:true fall through to other_args; otherwise call usage and exit
 	if cmd.CatchAll != nil && cmd.CatchAll.CatchHelp {
-		b.WriteString("      -h|--help) other_args=\"${other_args} $1\"; shift ;;\n")
+		b.WriteString(fmt.Sprintf("      -h|--help) %s=\"${%s} $1\"; shift ;;\n", otherArgs, otherArgs))
 	} else {
 		b.WriteString(fmt.Sprintf("      -h|--help) %s_%s_usage; exit 0 ;;\n", appName, cmd.Name))
 	}
 	b.WriteString("      --) shift; break ;;\n")
 	if cmd.CatchAll != nil {
 		b.WriteString("      -*) echo \"Unknown flag: $1\" >&2; exit 2 ;;\n")
-		b.WriteString("      *) other_args=\"${other_args} $1\"; shift ;;\n")
+		b.WriteString(fmt.Sprintf("      *) %s=\"${%s} $1\"; shift ;;\n", otherArgs, otherArgs))
 	} else {
 		b.WriteString("      -*) echo \"Unknown flag: $1\" >&2; exit 2 ;;\n")
 		b.WriteString("      *) break ;;\n")
@@ -462,19 +562,19 @@ func generateFlagParser(appName string, cmd Command) string {
 		if label == "" {
 			label = "extra"
 		}
-		b.WriteString(fmt.Sprintf("  other_args=\"${other_args# }\"\n"))
-		b.WriteString(fmt.Sprintf("  if [ -z \"${other_args}\" ]; then\n"))
+		b.WriteString(fmt.Sprintf("  %s=\"${%s# }\"\n", otherArgs, otherArgs))
+		b.WriteString(fmt.Sprintf("  if [ -z \"${%s}\" ]; then\n", otherArgs))
 		b.WriteString(fmt.Sprintf("    echo \"Error: <%s> is required\" >&2\n", label))
 		b.WriteString(fmt.Sprintf("    %s_%s_usage\n", appName, cmd.Name))
 		b.WriteString("    exit 1\n")
 		b.WriteString("  fi\n")
 	} else if cmd.CatchAll != nil {
-		b.WriteString("  other_args=\"${other_args# }\"\n")
+		b.WriteString(fmt.Sprintf("  %s=\"${%s# }\"\n", otherArgs, otherArgs))
 	}
 
 	// default injection
 	for _, f := range cmd.Flags {
-		varName := sanitizeVarName(f.Long)
+		varName := flagVarName(f)
 		if len(f.DefaultList) > 0 {
 			// array default: space-delimited string
 			b.WriteString(fmt.Sprintf("  : \"${%s:=%s}\"\n", varName, strings.Join(f.DefaultList, " ")))
@@ -486,9 +586,10 @@ func generateFlagParser(appName string, cmd Command) string {
 	// required flag checks
 	for _, f := range cmd.Flags {
 		if f.Required {
-			varName := sanitizeVarName(f.Long)
+			varName := flagVarName(f)
+			displayName := flagDisplayName(f)
 			b.WriteString(fmt.Sprintf("  if [ -z \"${%s}\" ]; then\n", varName))
-			b.WriteString(fmt.Sprintf("    echo \"Error: %s is required\" >&2\n", f.Long))
+			b.WriteString(fmt.Sprintf("    echo \"Error: %s is required\" >&2\n", displayName))
 			b.WriteString(fmt.Sprintf("    %s_%s_usage\n", appName, cmd.Name))
 			if cmd.ShowExamplesOnError && len(cmd.Examples) > 0 {
 				b.WriteString("    echo \"\"\n")
@@ -505,12 +606,13 @@ func generateFlagParser(appName string, cmd Command) string {
 	// allowed value checks for flags
 	for _, f := range cmd.Flags {
 		if len(f.Allowed) > 0 && f.Arg != "" {
-			varName := sanitizeVarName(f.Long)
+			varName := flagVarName(f)
+			displayName := flagDisplayName(f)
 			b.WriteString(fmt.Sprintf("  if [ -n \"${%s}\" ]; then\n", varName))
 			b.WriteString(fmt.Sprintf("    case \"${%s}\" in\n", varName))
 			b.WriteString(fmt.Sprintf("      %s) ;;\n", strings.Join(f.Allowed, "|")))
 			b.WriteString(fmt.Sprintf("      *) echo \"Error: %s must be one of: %s\" >&2; exit 1 ;;\n",
-				f.Long, strings.Join(f.Allowed, ", ")))
+				displayName, strings.Join(f.Allowed, ", ")))
 			b.WriteString("    esac\n")
 			b.WriteString("  fi\n")
 		}
@@ -519,11 +621,12 @@ func generateFlagParser(appName string, cmd Command) string {
 	// conflicts checks
 	for _, f := range cmd.Flags {
 		if len(f.Conflicts) > 0 {
-			varName := sanitizeVarName(f.Long)
+			varName := flagVarName(f)
+			displayName := flagDisplayName(f)
 			for _, conflict := range f.Conflicts {
 				conflictVar := sanitizeVarName(conflict)
 				b.WriteString(fmt.Sprintf("  if [ -n \"${%s}\" ] && [ -n \"${%s}\" ]; then\n", varName, conflictVar))
-				b.WriteString(fmt.Sprintf("    echo \"Error: %s and %s cannot be used together\" >&2\n", f.Long, conflict))
+				b.WriteString(fmt.Sprintf("    echo \"Error: %s and %s cannot be used together\" >&2\n", displayName, conflict))
 				b.WriteString("    exit 1\n")
 				b.WriteString("  fi\n")
 			}
@@ -533,11 +636,12 @@ func generateFlagParser(appName string, cmd Command) string {
 	// needs checks
 	for _, f := range cmd.Flags {
 		if len(f.Needs) > 0 {
-			varName := sanitizeVarName(f.Long)
+			varName := flagVarName(f)
+			displayName := flagDisplayName(f)
 			for _, need := range f.Needs {
 				needVar := sanitizeVarName(need)
 				b.WriteString(fmt.Sprintf("  if [ -n \"${%s}\" ] && [ -z \"${%s}\" ]; then\n", varName, needVar))
-				b.WriteString(fmt.Sprintf("    echo \"Error: %s requires %s\" >&2\n", f.Long, need))
+				b.WriteString(fmt.Sprintf("    echo \"Error: %s requires %s\" >&2\n", displayName, need))
 				b.WriteString("    exit 1\n")
 				b.WriteString("  fi\n")
 			}
@@ -547,7 +651,7 @@ func generateFlagParser(appName string, cmd Command) string {
 	// unique dedup for repeatable value flags
 	for _, f := range cmd.Flags {
 		if f.Repeatable && f.Unique && f.Arg != "" {
-			varName := sanitizeVarName(f.Long)
+			varName := flagVarName(f)
 			dedupVar := "_dedup_" + varName
 			b.WriteString(fmt.Sprintf("  %s=\"\"\n", dedupVar))
 			b.WriteString(fmt.Sprintf("  for _item in ${%s}; do\n", varName))
@@ -563,7 +667,8 @@ func generateFlagParser(appName string, cmd Command) string {
 	// validate calls for flags
 	for _, f := range cmd.Flags {
 		if f.Arg != "" {
-			varName := sanitizeVarName(f.Long)
+			varName := flagVarName(f)
+			displayName := flagDisplayName(f)
 			validators := []string{}
 			if f.Validate != "" {
 				validators = append(validators, f.Validate)
@@ -571,7 +676,7 @@ func generateFlagParser(appName string, cmd Command) string {
 			validators = append(validators, f.ValidateList...)
 			for _, v := range validators {
 				b.WriteString(fmt.Sprintf("  if [ -n \"${%s}\" ]; then\n", varName))
-				b.WriteString(fmt.Sprintf("    validate_%s \"%s\" \"${%s}\"\n", v, f.Long, varName))
+				b.WriteString(fmt.Sprintf("    validate_%s \"%s\" \"${%s}\"\n", v, displayName, varName))
 				b.WriteString("  fi\n")
 			}
 		}
@@ -792,7 +897,7 @@ func generateEnvCheck(evs []EnvironmentVariable) string {
 
 // writeEnvVarsHelp writes env var section to usage, skipping private ones.
 // Pass revealKey to also emit a reveal block for private env vars.
-func writeEnvVarsHelp(b *strings.Builder, evs []EnvironmentVariable, wordWrap int, revealKey string) {
+func writeEnvVarsHelp(b *strings.Builder, evs []EnvironmentVariable, captionColor string, wordWrap int, revealKey string) {
 	reveal := revealKey
 	// prefix: "  %-20s " = 2 + 20 + 1 = 23 chars
 	const prefixLen = 23
@@ -811,7 +916,7 @@ func writeEnvVarsHelp(b *strings.Builder, evs []EnvironmentVariable, wordWrap in
 	}
 	if len(visible) > 0 {
 		b.WriteString("  echo \"\"\n")
-		b.WriteString("  echo \"Environment Variables:\"\n")
+		b.WriteString(colorEcho("  ", captionColor, "Environment Variables:"))
 		for _, ev := range visible {
 			req := ""
 			if ev.Required {
@@ -881,7 +986,7 @@ func writeCommandFunctions(f *os.File, cfg *ShellyCfg, cmds []Command, prefix st
 			// Temporarily rewrite cmd.Name so parser function names use funcBase.
 			cmdCopy := cmd
 			cmdCopy.Name = funcBase
-			flagParser := generateFlagParser(cfg.Name, cmdCopy)
+			flagParser := cfg.generateFlagParser(cfg.Name, cmdCopy)
 			argParser := generateArgParser(cfg.Name, cmdCopy)
 
 			// Filename override: read body from custom path instead of default
@@ -934,7 +1039,7 @@ func writeCommandFunctions(f *os.File, cfg *ShellyCfg, cmds []Command, prefix st
 			for _, v := range cmd.Variables {
 				invokes += fmt.Sprintf("  %s=\"%s\"\n", v.Name, v.Value)
 			}
-			fullBody := invokes + indentBody(cleanBody)
+			fullBody := invokes + cfg.indentBody(cleanBody)
 
 			// per-command env var + dep checks
 			envCheckCmd := generateEnvCheck(cmd.EnvironmentVariables)
@@ -1038,7 +1143,59 @@ func generateSubDispatcher(appName, funcBase string, cmd Command) string {
 	return b.String()
 }
 
-// ─── Main generator ───────────────────────────────────────────────────────────
+// generateInspectArgs builds the default inspect_args() function that prints all
+// parsed flag/arg/other_args variables to stderr for debugging.
+func (cfg *ShellyCfg) generateInspectArgs() string {
+	var b strings.Builder
+	b.WriteString("inspect_args() {\n")
+
+	// collect all var names: root flags/args, or per-command flags/args
+	var varNames []string
+	if len(cfg.Commands) == 0 {
+		for _, f := range cfg.Flags {
+			varNames = append(varNames, flagVarName(f))
+		}
+		for _, a := range cfg.Args {
+			varNames = append(varNames, sanitizeVarName(a.Name))
+		}
+	} else {
+		seen := map[string]bool{}
+		for _, cmd := range cfg.Commands {
+			for _, f := range cmd.Flags {
+				n := flagVarName(f)
+				if !seen[n] {
+					seen[n] = true
+					varNames = append(varNames, n)
+				}
+			}
+			for _, a := range cmd.Args {
+				n := sanitizeVarName(a.Name)
+				if !seen[n] {
+					seen[n] = true
+					varNames = append(varNames, n)
+				}
+			}
+			if cmd.CatchAll != nil {
+				oav := cfg.otherArgsVar()
+				if !seen[oav] {
+					seen[oav] = true
+					varNames = append(varNames, oav)
+				}
+			}
+		}
+	}
+
+	if len(varNames) > 0 {
+		b.WriteString("  printf 'inspecting args:\\n' >&2\n")
+		for _, v := range varNames {
+			b.WriteString(fmt.Sprintf("  printf '  %s: %%s\\n' \"${%s}\" >&2\n", v, v))
+		}
+	} else {
+		b.WriteString("  # hook: validate positional args - override in src/inspect_args.sh\n  return 0\n")
+	}
+	b.WriteString("}\n")
+	return b.String()
+}
 
 func (cfg *ShellyCfg) shellGen() error {
 	outPath := fmt.Sprintf("./%s", cfg.Name)
@@ -1064,6 +1221,11 @@ func (cfg *ShellyCfg) shellGen() error {
 // shellGenToWriter writes the complete generated script to f.
 // All generation logic lives here; shellGen() and shellGenToString() both call it.
 func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
+	// production mode: disable view markers globally
+	if cfg.isProduction() {
+		cfg.DisableViewMarkers = true
+	}
+
 	// Discover lib files
 	libFiles, _ := filepath.Glob("src/lib/*.sh")
 	if len(libFiles) == 0 {
@@ -1184,7 +1346,7 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 			initBody += fmt.Sprintf("  %s=\"%s\"\n", v.Name, v.Value)
 		}
 	}
-	initContent := "initialize() {\n" + initBody
+	initContent := cfg.initFuncName() + "() {\n" + initBody
 	if envCheck != "" {
 		initContent += "\n  # environment variable checks\n" + envCheck
 	}
@@ -1222,7 +1384,7 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 		if strings.TrimSpace(cmdUsageSrc) != "" {
 			cmdUsage = strings.ReplaceAll(cmdUsageSrc, "%APP_NAME%", cfg.Name)
 		} else {
-			cmdUsage = generateCommandUsage(cfg.Name, cmd, cfg.privateRevealEnvVar(), cfg.WordWrap)
+			cmdUsage = generateCommandUsage(cfg.Name, cmd, cfg.privateRevealEnvVar(), cfg.WordWrap, cfg.UsageColors)
 		}
 		cfg.writeMarker(f, fmt.Sprintf("# :command.usage.%s\n", cmd.Name))
 		write(f, cmdUsage+"\n\n")
@@ -1251,11 +1413,13 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 	cfg.writeMarker(f, "# :command.normalize_input\n")
 	write(f, normalize+"\n\n")
 
-	// inspect_args stub (overridable)
-	inspectDef := "inspect_args() {\n  # hook: validate positional args - override in src/inspect_args.sh\n  return 0\n}\n"
-	inspect := strings.ReplaceAll(readSrcOrDefault("inspect_args.sh", inspectDef), "%APP_NAME%", cfg.Name)
-	cfg.writeMarker(f, "# :command.inspect_args\n")
-	write(f, inspect+"\n\n")
+	// inspect_args: emit dev utility in dev mode; skip in production
+	if !cfg.isProduction() {
+		inspectDef := cfg.generateInspectArgs()
+		inspect := strings.ReplaceAll(readSrcOrDefault("inspect_args.sh", inspectDef), "%APP_NAME%", cfg.Name)
+		cfg.writeMarker(f, "# :command.inspect_args\n")
+		write(f, inspect+"\n\n")
+	}
 
 	// parse_requirements stub (overridable)
 	parseReqDef := "parse_requirements() {\n  # hook: check env/deps - override in src/parse_requirements.sh\n  return 0\n}\n"
@@ -1276,7 +1440,7 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 			body := strings.TrimRight(funcBodies[name], "\n")
 			origin := funcOrigins[name]
 			write(f, fmt.Sprintf("# :lib %s\n", origin))
-			write(f, fmt.Sprintf("%s() {\n%s\n}\n\n", name, indentBody(body)))
+			write(f, fmt.Sprintf("%s() {\n%s\n}\n\n", name, cfg.indentBody(body)))
 		}
 	}
 
@@ -1291,7 +1455,7 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 		}
 		// generate flag parser named root_parse_flags
 		if len(cfg.Flags) > 0 {
-			fp := generateFlagParser(cfg.Name, rootCmd)
+			fp := cfg.generateFlagParser(cfg.Name, rootCmd)
 			// rename <funcBase>_parse_flags → root_parse_flags
 			fp = strings.ReplaceAll(fp, "root_parse_flags()", "root_parse_flags()")
 			cfg.writeMarker(f, "# :command.root.flags\n")
@@ -1310,7 +1474,7 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 		if readErr != nil {
 			rootBodyContent = "  # TODO: implement root command\n  return 0"
 		} else {
-			rootBodyContent = indentBody(strings.TrimRight(string(rawBody), "\n"))
+			rootBodyContent = cfg.indentBody(strings.TrimRight(string(rawBody), "\n"))
 		}
 
 		invokes := ""
@@ -1332,7 +1496,7 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 				Name:  cfg.Name,
 				Flags: cfg.Flags,
 			}
-			gfp := generateFlagParser(cfg.Name, globalFlagCmd)
+			gfp := cfg.generateFlagParser(cfg.Name, globalFlagCmd)
 			cfg.writeMarker(f, "# :command.global.flags\n")
 			write(f, gfp+"\n")
 		}
@@ -1342,7 +1506,7 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 
 	// run dispatcher
 	var runBuilder strings.Builder
-	runBuilder.WriteString("run() {\n")
+	runBuilder.WriteString(cfg.runFuncName() + "() {\n")
 	runBuilder.WriteString("  normalize_input \"$@\"\n")
 	// global flag parser call (when root has flags alongside subcommands)
 	if len(cfg.Commands) > 0 && len(cfg.Flags) > 0 {
@@ -1431,7 +1595,7 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 	write(f, runDef+"\n\n")
 
 	// start
-	startDef := "initialize\nrun \"$@\"\n"
+	startDef := cfg.initFuncName() + "\n" + cfg.runFuncName() + " \"$@\"\n"
 	start := strings.ReplaceAll(readSrcOrDefault("start.sh", startDef), "%APP_NAME%", cfg.Name)
 	cfg.writeMarker(f, "# :command.start\n")
 	write(f, start+"\n")
@@ -1439,6 +1603,9 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 }
 
 func (cfg *ShellyCfg) shebang() string {
+	if cfg.DisableHeaderComment {
+		return "#!/usr/bin/env sh"
+	}
 	return "#!/usr/bin/env sh\n# This script was generated by shelly\n# Modifying it manually is not recommended"
 }
 

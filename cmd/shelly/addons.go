@@ -7,25 +7,28 @@ import (
 
 // addAddon writes addon files into the src/ tree.
 // Known addons: "validations", "colors", "hooks".
-func addAddon(name string) error {
+// When upgrade is true, existing files are overwritten.
+func addAddon(name string, upgrade bool) error {
 	switch name {
 	case "validations":
-		return writeAddonFile("src/lib/validations.sh", validationsContent)
+		return writeAddonFile("src/lib/validations.sh", validationsContent, upgrade)
 	case "colors":
-		return writeAddonFile("src/lib/colors.sh", colorsContent)
+		return writeAddonFile("src/lib/colors.sh", colorsContent, upgrade)
 	case "hooks":
-		if err := writeAddonFile("src/before.sh", beforeHookContent); err != nil {
+		if err := writeAddonFile("src/before.sh", beforeHookContent, upgrade); err != nil {
 			return err
 		}
-		return writeAddonFile("src/after.sh", afterHookContent)
+		return writeAddonFile("src/after.sh", afterHookContent, upgrade)
 	default:
 		return fmt.Errorf("unknown addon %q (available: validations, colors, hooks)", name)
 	}
 }
 
-func writeAddonFile(path, content string) error {
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("addon file already exists: %s", path)
+func writeAddonFile(path, content string, upgrade bool) error {
+	if !upgrade {
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("addon file already exists: %s (use --upgrade to overwrite)", path)
+		}
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
