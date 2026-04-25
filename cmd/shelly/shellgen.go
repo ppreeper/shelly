@@ -1327,41 +1327,19 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 		write(f, strings.TrimRight(headerSrc, "\n")+"\n\n")
 	}
 
+	// preamble — raw content injected before any function definitions
+	preambleSrc := readSrcOrDefault("preamble.sh", "")
+	if strings.TrimSpace(preambleSrc) != "" {
+		preambleSrc = strings.ReplaceAll(preambleSrc, "%APP_NAME%", cfg.Name)
+		preambleSrc = strings.ReplaceAll(preambleSrc, "%VERSION%", cfg.Version)
+		cfg.writeMarker(f, "# :command.preamble\n")
+		write(f, strings.TrimRight(preambleSrc, "\n")+"\n\n")
+	}
+
 	// version_command
 	versionDef := "version_command() {\n  echo \"$version\"\n}\n"
 	cfg.writeMarker(f, "# :command.version_command\n")
 	write(f, readSrcOrDefault("version_command.sh", versionDef)+"\n\n")
-
-	// initialize — sets version, runs global env checks
-	envCheck := generateEnvCheck(cfg.EnvironmentVariables)
-	depsCheck := generateDepsCheck(cfg.Dependencies)
-	setLine := "  set -e\n"
-	if cfg.Strict {
-		setLine = "  set -euo pipefail\n  IFS=$'\\n\\t'\n"
-	}
-	initBody := fmt.Sprintf("  version=\"%s\"\n%s", cfg.Version, setLine)
-	// inject global variables
-	if len(cfg.Variables) > 0 {
-		for _, v := range cfg.Variables {
-			initBody += fmt.Sprintf("  %s=\"%s\"\n", v.Name, v.Value)
-		}
-	}
-	initContent := cfg.initFuncName() + "() {\n" + initBody
-	if envCheck != "" {
-		initContent += "\n  # environment variable checks\n" + envCheck
-	}
-	if depsCheck != "" {
-		initContent += "\n  # dependency checks\n" + depsCheck
-	}
-	initContent += "}\n"
-	// allow user override
-	initSrc := readSrcOrDefault("initialize.sh", "")
-	if strings.TrimSpace(initSrc) != "" {
-		initContent = strings.ReplaceAll(initSrc, "%APP_NAME%", cfg.Name)
-		initContent = strings.ReplaceAll(initContent, "%VERSION%", cfg.Version)
-	}
-	cfg.writeMarker(f, "# :command.initialize\n")
-	write(f, initContent+"\n\n")
 
 	// usage — auto-generated from YAML unless user provides src/usage.sh
 	usageSrc := readSrcOrDefault("usage.sh", "")
@@ -1504,6 +1482,71 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 		writeCommandFunctions(f, cfg, cfg.Commands, cfg.Name)
 	}
 
+	// before_hook — wraps src/before.sh body in before_hook() function (if present)
+	beforeSrc := readSrcOrDefault("before.sh", "")
+	hasBeforeHook := strings.TrimSpace(beforeSrc) != ""
+	if hasBeforeHook {
+		beforeSrc = strings.ReplaceAll(beforeSrc, "%APP_NAME%", cfg.Name)
+		var beforeBody string
+		for _, line := range strings.Split(strings.TrimRight(beforeSrc, "\n"), "\n") {
+			beforeBody += "  " + line + "\n"
+		}
+		cfg.writeMarker(f, "# :command.before_hook\n")
+		write(f, "before_hook() {\n"+beforeBody+"}\n\n")
+	}
+
+	// after_hook — wraps src/after.sh body in after_hook() function (if present)
+	afterSrc := readSrcOrDefault("after.sh", "")
+	hasAfterHook := strings.TrimSpace(afterSrc) != ""
+	if hasAfterHook {
+		afterSrc = strings.ReplaceAll(afterSrc, "%APP_NAME%", cfg.Name)
+		var afterBody string
+		for _, line := range strings.Split(strings.TrimRight(afterSrc, "\n"), "\n") {
+			afterBody += "  " + line + "\n"
+		}
+		cfg.writeMarker(f, "# :command.after_hook\n")
+		write(f, "after_hook() {\n"+afterBody+"}\n\n")
+	}
+
+	// initialize — sets version, runs global env checks
+	// Wraps src/initialize.sh body (or auto-generated default) in initialize() function.
+	envCheck := generateEnvCheck(cfg.EnvironmentVariables)
+	depsCheck := generateDepsCheck(cfg.Dependencies)
+	setLine := "  set -e\n"
+	if cfg.Strict {
+		setLine = "  set -euo pipefail\n  IFS=$'\\n\\t'\n"
+	}
+	initBody := fmt.Sprintf("  version=\"%s\"\n%s", cfg.Version, setLine)
+	// inject global variables
+	if len(cfg.Variables) > 0 {
+		for _, v := range cfg.Variables {
+			initBody += fmt.Sprintf("  %s=\"%s\"\n", v.Name, v.Value)
+		}
+	}
+	if envCheck != "" {
+		initBody += "\n  # environment variable checks\n" + envCheck
+	}
+	if depsCheck != "" {
+		initBody += "\n  # dependency checks\n" + depsCheck
+	}
+	// allow user override (body-only; wrapped in function)
+	initSrc := readSrcOrDefault("initialize.sh", "")
+	if strings.TrimSpace(initSrc) != "" {
+		initSrc = strings.ReplaceAll(initSrc, "%APP_NAME%", cfg.Name)
+		initSrc = strings.ReplaceAll(initSrc, "%VERSION%", cfg.Version)
+		initBody = ""
+		for _, line := range strings.Split(strings.TrimRight(initSrc, "\n"), "\n") {
+			initBody += "  " + line + "\n"
+		}
+	}
+	initContent := cfg.initFuncName() + "() {\n" + initBody
+	if !strings.HasSuffix(initContent, "\n") {
+		initContent += "\n"
+	}
+	initContent += "}\n"
+	cfg.writeMarker(f, "# :command.initialize\n")
+	write(f, initContent+"\n\n")
+
 	// run dispatcher
 	var runBuilder strings.Builder
 	runBuilder.WriteString(cfg.runFuncName() + "() {\n")
@@ -1512,13 +1555,9 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 	if len(cfg.Commands) > 0 && len(cfg.Flags) > 0 {
 		runBuilder.WriteString(fmt.Sprintf("  %s_parse_flags \"$@\"\n", cfg.Name))
 	}
-	// before hook — injected from src/before.sh if present
-	beforeSrc := readSrcOrDefault("before.sh", "")
-	if strings.TrimSpace(beforeSrc) != "" {
-		beforeSrc = strings.ReplaceAll(beforeSrc, "%APP_NAME%", cfg.Name)
-		for _, line := range strings.Split(strings.TrimRight(beforeSrc, "\n"), "\n") {
-			runBuilder.WriteString("  " + line + "\n")
-		}
+	// before hook — call before_hook() if src/before.sh was present
+	if hasBeforeHook {
+		runBuilder.WriteString("  before_hook\n")
 	}
 
 	// find default command (if any) and whether it forces on zero args
@@ -1581,13 +1620,9 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 		runBuilder.WriteString(fmt.Sprintf("    *) echo \"Unknown command: $_cmd\" >&2; %s_usage; exit 2 ;;\n", cfg.Name))
 	}
 	runBuilder.WriteString("  esac\n")
-	// after hook — injected from src/after.sh if present
-	afterSrc := readSrcOrDefault("after.sh", "")
-	if strings.TrimSpace(afterSrc) != "" {
-		afterSrc = strings.ReplaceAll(afterSrc, "%APP_NAME%", cfg.Name)
-		for _, line := range strings.Split(strings.TrimRight(afterSrc, "\n"), "\n") {
-			runBuilder.WriteString("  " + line + "\n")
-		}
+	// after hook — call after_hook() if src/after.sh was present
+	if hasAfterHook {
+		runBuilder.WriteString("  after_hook\n")
 	}
 	runBuilder.WriteString("}\n")
 	runDef := strings.ReplaceAll(readSrcOrDefault("run_wrapper.sh", runBuilder.String()), "%APP_NAME%", cfg.Name)
@@ -1604,9 +1639,9 @@ func (cfg *ShellyCfg) shellGenToWriter(f *os.File) error {
 
 func (cfg *ShellyCfg) shebang() string {
 	if cfg.DisableHeaderComment {
-		return "#!/usr/bin/env sh"
+		return "#!/bin/sh"
 	}
-	return "#!/usr/bin/env sh\n# This script was generated by shelly\n# Modifying it manually is not recommended"
+	return "#!/bin/sh\n# This script was generated by shelly\n# Modifying it manually is not recommended"
 }
 
 // commandFunc creates a body-only skeleton for a command if not present.

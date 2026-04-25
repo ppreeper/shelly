@@ -1,5 +1,3 @@
-initialize() {
-  version="%VERSION%"
-  # fail fast for commands
-  set -e
-}
+version="%VERSION%"
+# fail fast for commands
+set -e

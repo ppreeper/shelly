@@ -19,8 +19,10 @@ func addAddon(name string, upgrade bool) error {
 			return err
 		}
 		return writeAddonFile("src/after.sh", afterHookContent, upgrade)
+	case "preamble":
+		return writeAddonFile("src/preamble.sh", preambleContent, upgrade)
 	default:
-		return fmt.Errorf("unknown addon %q (available: validations, colors, hooks)", name)
+		return fmt.Errorf("unknown addon %q (available: validations, colors, hooks, preamble)", name)
 	}
 }
 
@@ -96,4 +98,11 @@ const afterHookContent = `# src/after.sh — runs inside run() after command dis
 # Use %APP_NAME% to reference the script name.
 # Example:
 #   echo "Done."
+`
+
+const preambleContent = `# src/preamble.sh — raw content placed at the top of the compiled script,
+# after the shebang/comments and before any function definitions.
+# Use %APP_NAME% and %VERSION% as substitution tokens.
+# Example:
+#   MY_CONFIG_DIR="${HOME}/.config/%APP_NAME%"
 `

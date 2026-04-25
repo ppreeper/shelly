@@ -1,11 +1,9 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 
-	"github.com/charmbracelet/fang"
 	"github.com/ppreeper/shelly/internal/vcs"
 	"github.com/ppreeper/shelly/templates"
 	"github.com/spf13/cobra"
@@ -30,7 +28,7 @@ func main() {
 	rootCmd.AddCommand(app.Validate())
 	rootCmd.AddCommand(app.Generate())
 	rootCmd.AddCommand(app.Add())
-	if err := fang.Execute(context.Background(), rootCmd); err != nil {
+	if err := rootCmd.Execute(); err != nil {
 		fmt.Println("Error executing command:", err)
 		os.Exit(1)
 	}

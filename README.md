@@ -493,7 +493,7 @@ Use `%APP_NAME%` as a substitution token in any override file.
 
 ## Generated Script Behavior
 
-- Shebang: `#!/usr/bin/env sh`
+- Shebang: `#!/bin/sh`
 - Flag normalization: `--flag=value` → `--flag value`, `-abc` → `-a -b -c`
 - Unknown flags exit 2 with an error message
 - Unknown commands exit 2 and print usage
