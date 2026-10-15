@@ -58,7 +58,11 @@ func (app *App) Validate() *cobra.Command {
 		Use:   "validate",
 		Short: "Scan the configuration file for errors",
 		Run: func(cmd *cobra.Command, args []string) {
-			shellyCfg := readConfig()
+			shellyCfg, err := readConfigE()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error: "+err.Error())
+				os.Exit(1)
+			}
 			if shellyCfg == nil {
 				fmt.Println("Error: could not read configuration file")
 				return
@@ -66,6 +70,13 @@ func (app *App) Validate() *cobra.Command {
 
 			if verbose {
 				fmt.Println(prettyprint(shellyCfg))
+			}
+
+			if errs := shellyCfg.validateSemantics(); len(errs) > 0 {
+				for _, e := range errs {
+					fmt.Fprintln(os.Stderr, "error: "+e)
+				}
+				os.Exit(1)
 			}
 
 			fmt.Println("File read OK")
@@ -79,12 +90,16 @@ func (app *App) Generate() *cobra.Command {
 	var strict bool
 	var verbose bool
 	var env string
+	var upgrade bool
 	cmd := &cobra.Command{
 		Use:     "generate",
 		Aliases: []string{"g"},
 		Short:   "Generate the bash script and required files",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			shellyCfg := readConfig()
+			shellyCfg, err := readConfigE()
+			if err != nil {
+				return fmt.Errorf("could not read configuration: %w", err)
+			}
 			if shellyCfg == nil {
 				return fmt.Errorf("Error: could not read configuration file")
 			}
@@ -97,6 +112,12 @@ func (app *App) Generate() *cobra.Command {
 			}
 			// Generate commands
 			shellyCfg.shellGenCommands()
+			// Refresh marked library files before writing the master script
+			if upgrade {
+				if err := upgradeLibs(shellyCfg); err != nil {
+					return fmt.Errorf("upgrade failed: %w", err)
+				}
+			}
 			// Generate main script
 			if err := shellyCfg.shellGen(); err != nil {
 				return fmt.Errorf("generate failed: %w", err)
@@ -104,7 +125,7 @@ func (app *App) Generate() *cobra.Command {
 
 			// run shellcheck if requested
 			if strict {
-				if err := runShellcheck(fmt.Sprintf("./%s", shellyCfg.Name), strict); err != nil {
+				if err := runShellcheck(shellyCfg.outputPath(), strict); err != nil {
 					return fmt.Errorf("shellcheck failed: %w", err)
 				}
 			}
@@ -114,6 +135,7 @@ func (app *App) Generate() *cobra.Command {
 	cmd.Flags().BoolVarP(&strict, "strict", "s", false, "Run shellcheck and fail on any diagnostics (requires shellcheck installed)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show the shelly configuration file prior to generating")
 	cmd.Flags().StringVarP(&env, "env", "e", "", "Override generation environment (e.g. production)")
+	cmd.Flags().BoolVarP(&upgrade, "upgrade", "u", false, "Refresh library files marked with [@shelly-upgrade] before generating")
 	return cmd
 }
 
@@ -122,7 +144,10 @@ func (app *App) Preview() *cobra.Command {
 		Use:   "preview",
 		Short: "Generate the bash script to STDOUT",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			shellyCfg := readConfig()
+			shellyCfg, err := readConfigE()
+			if err != nil {
+				return fmt.Errorf("could not read configuration: %w", err)
+			}
 			if shellyCfg == nil {
 				return fmt.Errorf("could not read configuration file")
 			}
@@ -139,14 +164,36 @@ func (app *App) Preview() *cobra.Command {
 
 func (app *App) Add() *cobra.Command {
 	var upgrade bool
+	var source string
+	var list bool
+	var quiet bool
 	cmd := &cobra.Command{
-		Use:   "add <addon>",
-		Short: "Add a built-in addon to the project (validations, colors, hooks)",
-		Args:  cobra.ExactArgs(1),
+		Use:   "add [library]",
+		Short: "Add a built-in addon, or install a library from a source",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if source != "" {
+				if list {
+					return listLibraries(source)
+				}
+				if len(args) == 0 {
+					return fmt.Errorf("add: library name required (or use --list)")
+				}
+				return addFromSource(source, args[0], upgrade, quiet)
+			}
+			if list {
+				listBuiltins()
+				return nil
+			}
+			if len(args) == 0 {
+				return fmt.Errorf("add: addon name required")
+			}
 			return addAddon(args[0], upgrade)
 		},
 	}
-	cmd.Flags().BoolVarP(&upgrade, "upgrade", "u", false, "Overwrite existing addon files")
+	cmd.Flags().BoolVarP(&upgrade, "upgrade", "u", false, "Overwrite existing files")
+	cmd.Flags().StringVarP(&source, "source", "s", "", "Install from a libraries source directory (containing libraries.yml)")
+	cmd.Flags().BoolVarP(&list, "list", "l", false, "List available libraries")
+	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Do not show post-install messages")
 	return cmd
 }

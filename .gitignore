@@ -32,12 +32,12 @@ go.work.sum
 # .vscode/
 
 tmp/
-cli
-gup
-shelly
+/cli
+/gup
+/shelly
 
-bashlygen/cli
-bashlygen/**/*sh
+# Stray command stubs written into the package dir by test runs
+/cmd/shelly/src/
 
 shellygen/cli
 shellygen/**/*sh
