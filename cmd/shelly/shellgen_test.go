@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -56,15 +58,15 @@ func TestParserInjection(t *testing.T) {
 	}
 	s := readGenerated(t, "testapp2")
 
-	if !strings.Contains(s, "upload_parse_flags()") {
-		t.Fatal("missing upload_parse_flags()")
+	if !strings.Contains(s, "upload_parse()") {
+		t.Fatal("missing upload_parse()")
 	}
 	if !strings.Contains(s, "upload_command()") {
 		t.Fatal("missing upload_command()")
 	}
 	idx := strings.Index(s, "upload_command()")
-	if !strings.Contains(s[idx:], "upload_parse_flags \"$@\"") {
-		t.Fatal("upload_command does not invoke upload_parse_flags")
+	if !strings.Contains(s[idx:], "upload_parse \"$@\"") {
+		t.Fatal("upload_command does not invoke upload_parse")
 	}
 }
 
@@ -960,8 +962,8 @@ func TestRootFlagParsing(t *testing.T) {
 		t.Fatalf("shellGen: %v", err)
 	}
 	s := readGenerated(t, "mytool")
-	if !strings.Contains(s, "root_parse_flags()") {
-		t.Fatal("missing root_parse_flags()")
+	if !strings.Contains(s, "root_parse()") {
+		t.Fatal("missing root_parse()")
 	}
 	if !strings.Contains(s, "--verbose") {
 		t.Fatal("missing --verbose in root flag parser")
@@ -991,8 +993,8 @@ func TestRootArgParsing(t *testing.T) {
 		t.Fatalf("shellGen: %v", err)
 	}
 	s := readGenerated(t, "mytool")
-	if !strings.Contains(s, "root_parse_args()") {
-		t.Fatal("missing root_parse_args()")
+	if !strings.Contains(s, "root_parse()") {
+		t.Fatal("missing root_parse()")
 	}
 	if !strings.Contains(s, "<source> is required") {
 		t.Fatal("missing required check for source arg")
@@ -1302,8 +1304,8 @@ func TestFunctionOverride(t *testing.T) {
 	if !strings.Contains(s, "do_deploy_command()") {
 		t.Fatal("missing do_deploy_command() function")
 	}
-	if !strings.Contains(s, "do_deploy_parse_flags()") {
-		t.Fatal("missing do_deploy_parse_flags() function")
+	if !strings.Contains(s, "do_deploy_parse()") {
+		t.Fatal("missing do_deploy_parse() function")
 	}
 }
 
@@ -1878,7 +1880,7 @@ func TestStrictMode(t *testing.T) {
 	cfg := &ShellyCfg{
 		Name:     "mytool",
 		Version:  "0.1.0",
-		Strict:   true,
+		Strict:   StrictField{boolVal: true},
 		Commands: []Command{{Name: "build", Help: "Build it"}},
 	}
 	if err := cfg.shellGen(); err != nil {
@@ -1908,7 +1910,7 @@ func TestArgfile(t *testing.T) {
 			{
 				Name:    "deploy",
 				Help:    "Deploy it",
-				Argfile: true,
+				Argfile: ArgfileField{boolVal: true},
 				Flags:   []Flag{{Long: "--env", Arg: "environment", Help: "Target env"}},
 			},
 		},
@@ -1946,11 +1948,11 @@ func TestGlobalFlags(t *testing.T) {
 	}
 	s := readGenerated(t, "mytool")
 	// global flag parser must exist
-	if !strings.Contains(s, "mytool_parse_flags") {
-		t.Fatal("expected mytool_parse_flags for global flags")
+	if !strings.Contains(s, "mytool_parse()") {
+		t.Fatal("expected mytool_parse() for global flags")
 	}
-	// global flag parser must be called before command dispatch
-	parseIdx := strings.Index(s, "mytool_parse_flags")
+	// global flag parser must be defined/called before command dispatch
+	parseIdx := strings.Index(s, "mytool_parse()")
 	dispatchIdx := strings.Index(s, "build_command")
 	if parseIdx > dispatchIdx {
 		t.Fatal("global flag parser must be called before command dispatch")
@@ -2058,7 +2060,7 @@ func TestArgfileLineByLine(t *testing.T) {
 			{
 				Name:    "deploy",
 				Help:    "Deploy it",
-				Argfile: true,
+				Argfile: ArgfileField{boolVal: true},
 				Flags:   []Flag{{Long: "--env", Arg: "environment", Help: "Target env"}},
 			},
 		},
@@ -2115,34 +2117,31 @@ func TestCatchHelpPassthrough(t *testing.T) {
 	}
 	s := readGenerated(t, "mytool")
 
-	// find the run_parse_flags function
-	start := strings.Index(s, "run_parse_flags()")
+	// find the run_parse function
+	start := strings.Index(s, "run_parse()")
 	if start == -1 {
-		t.Fatal("missing run_parse_flags()")
+		t.Fatal("missing run_parse()")
 	}
-	// find the end of run_parse_flags (next function)
-	end := strings.Index(s[start:], "\nrun_parse_args()")
-	if end == -1 {
-		end = strings.Index(s[start:], "\nrun_command()")
-	}
+	// find the end of run_parse (next function)
+	end := strings.Index(s[start:], "\nrun_command()")
 	if end == -1 {
 		end = len(s) - start
 	}
-	flagParserBody := s[start : start+end]
+	parserBody := s[start : start+end]
 
 	// When catch_help is true, -h|--help must NOT call usage and exit
 	// It should fall into other_args accumulation instead
-	if strings.Contains(flagParserBody, "-h|--help) mytool_run_usage") {
+	if strings.Contains(parserBody, "-h|--help) mytool_run_usage") {
 		t.Fatal("catch_help:true should NOT intercept -h|--help with usage call; it must fall through to other_args")
 	}
 	// The -h and --help args should land in other_args
-	if !strings.Contains(flagParserBody, "other_args") {
-		t.Fatal("run_parse_flags missing other_args (catch_all required for catch_help)")
+	if !strings.Contains(parserBody, "other_args") {
+		t.Fatal("run_parse missing other_args (catch_all required for catch_help)")
 	}
 }
 
-// TestDoubleDashPositionals: args after '--' must be fed into positional
-// parsing, not discarded.
+// TestDoubleDashPositionals: '--' must switch the parser into positional mode
+// so tokens after it are treated as positionals (single-pass parsing).
 func TestDoubleDashPositionals(t *testing.T) {
 	dir := t.TempDir()
 	oldwd, _ := os.Getwd()
@@ -2167,35 +2166,572 @@ func TestDoubleDashPositionals(t *testing.T) {
 	}
 	s := readGenerated(t, "mytool")
 
-	// After '--' the remaining args should be passed into parse_args.
-	// The command function must call parse_args after parse_flags.
+	// The command must invoke the single parser exactly once.
 	start := strings.Index(s, "run_command()")
 	if start == -1 {
 		t.Fatal("missing run_command()")
 	}
 	cmdBody := s[start:]
-	if !strings.Contains(cmdBody, "run_parse_args") {
-		t.Fatal("run_command must call run_parse_args")
+	if !strings.Contains(cmdBody[:strings.Index(cmdBody, "}")], `run_parse "$@"`) {
+		t.Fatal("run_command must call run_parse \"$@\"")
 	}
-	// The flag parser '--' case must pass remaining args to the caller via $@.
-	// After 'shift; break', $@ contains the post-'--' args.
-	// The command wrapper must call parse_args "$@" (not with a fixed $1..$N).
-	fpStart := strings.Index(s, "run_parse_flags()")
-	fpEnd := strings.Index(s[fpStart:], "\nrun_parse_args()")
-	if fpEnd == -1 {
-		fpEnd = strings.Index(s[fpStart:], "\nrun_command()")
+
+	// The two-pass parser must be gone.
+	if strings.Contains(s, "run_parse_args") || strings.Contains(s, "parse_flags") {
+		t.Fatal("two-pass parse_flags/parse_args must be replaced by a single parser")
 	}
-	if fpEnd == -1 {
-		fpEnd = len(s) - fpStart
+
+	// The single parser handles '--' by switching to positional mode.
+	pStart := strings.Index(s, "run_parse()")
+	if pStart == -1 {
+		t.Fatal("missing run_parse()")
 	}
-	flagBody := s[fpStart : fpStart+fpEnd]
-	// '--' must shift and break so remaining $@ is preserved
-	if !strings.Contains(flagBody, "--) shift; break") {
-		t.Fatal("flag parser must handle '--' with 'shift; break'")
+	pEnd := strings.Index(s[pStart:], "\nrun_command()")
+	if pEnd == -1 {
+		pEnd = len(s) - pStart
 	}
-	// run_command must call run_parse_args "$@" so post-'--' args reach positionals
-	if !strings.Contains(cmdBody[:strings.Index(cmdBody, "}")], `run_parse_args "$@"`) {
-		t.Fatal("run_command must call run_parse_args \"$@\" so -- remainder reaches positional parser")
+	parserBody := s[pStart : pStart+pEnd]
+	if !strings.Contains(parserBody, "--) shift; _options_ended=true") {
+		t.Fatal("parser must treat '--' by enabling positional mode")
+	}
+	// The positional case must consume '$1' inside the same loop.
+	if !strings.Contains(parserBody, "_pos=$((_pos + 1))") {
+		t.Fatal("parser must track positional index in the same loop")
+	}
+}
+
+// TestSinglePassRuntimePositions executes a generated script and verifies the
+// core issue-0001 behaviors: flags and positionals interleave, and '--' forces
+// positional treatment.
+func TestSinglePassRuntimePositions(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: download
+    help: Download a file
+    args:
+      - name: source
+        required: true
+    flags:
+      - long: --force
+        short: -f
+      - long: --output
+        short: -o
+        arg: file
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/download_command.sh",
+		[]byte(`echo "source=[$source] force=[$force] output=[$output]"`+"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("sh", append([]string{"./myapp"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("run %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+
+	// flag before positional
+	if got := run("download", "--force", "example.com"); !strings.Contains(got, "source=[example.com]") || !strings.Contains(got, "force=[1]") {
+		t.Fatalf("flag-before-positional failed: %q", got)
+	}
+	// flag after positional
+	if got := run("download", "example.com", "--force"); !strings.Contains(got, "source=[example.com]") || !strings.Contains(got, "force=[1]") {
+		t.Fatalf("flag-after-positional failed: %q", got)
+	}
+	// '--' makes the following token a positional, even if it looks like a flag
+	if got := run("download", "--", "--force"); !strings.Contains(got, "source=[--force]") || !strings.Contains(got, "force=[]") {
+		t.Fatalf("double-dash positional failed: %q", got)
+	}
+	// inline --flag=value for a value flag
+	if got := run("download", "--output=out.txt", "x"); !strings.Contains(got, "source=[x]") || !strings.Contains(got, "output=[out.txt]") {
+		t.Fatalf("inline value failed: %q", got)
+	}
+	// short flag with separate value, interleaved with positional
+	if got := run("download", "x", "-o", "y"); !strings.Contains(got, "source=[x]") || !strings.Contains(got, "output=[y]") {
+		t.Fatalf("short value flag failed: %q", got)
+	}
+}
+
+// TestFlagAliasRuntime: every spelling (canonical long/short and aliases) sets
+// the same canonical variable, for both boolean and value flags.
+func TestArgfilePathMode(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: download
+    help: Download a file
+    argfile: ./download.args
+    args:
+      - name: source
+        required: true
+    flags:
+      - long: --force
+        short: -f
+      - long: --output
+        short: -o
+        arg: file
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/download_command.sh",
+		[]byte(`echo "source=[$source] force=[$force] output=[$output]"`+"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	// argfile in CWD: comment line, boolean flag, same-line quoted value,
+	// and an unknown flag that must be ignored.
+	os.WriteFile("download.args",
+		[]byte("# defaults\n--force\n--output \"out dir.txt\"\n--unknown ignored\n"), 0o644)
+
+	out, err := exec.Command("sh", "./myapp", "download", "x").CombinedOutput()
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	got := string(out)
+	for _, want := range []string{"source=[x]", "force=[1]", "output=[out dir.txt]"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in output:\n%s", want, got)
+		}
+	}
+}
+
+func TestArgfileBoolBackCompat(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: download
+    help: Download a file
+    argfile: true
+    args:
+      - name: source
+        required: true
+    flags:
+      - long: --force
+        short: -f
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/download_command.sh",
+		[]byte(`echo "source=[$source] force=[$force]"`+"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	// legacy path: ${HOME}/.config/myapp/download
+	if err := os.MkdirAll(dir+"/.config/myapp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(dir+"/.config/myapp/download", []byte("--force\n"), 0o644)
+
+	cmd := exec.Command("sh", "./myapp", "download", "x")
+	cmd.Env = append(os.Environ(), "HOME="+dir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "force=[1]") || !strings.Contains(got, "source=[x]") {
+		t.Errorf("unexpected output:\n%s", got)
+	}
+}
+
+func TestFlagAliasRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: download
+    help: Download a file
+    args:
+      - name: source
+        required: true
+    flags:
+      - long: --force
+        short: -f
+        alias: -F
+        aliases: [--forcefully, --forcibly]
+      - long: --output
+        short: -o
+        aliases: [--out]
+        arg: file
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/download_command.sh",
+		[]byte(`echo "force=[$force] output=[$output]"`+"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("sh", append([]string{"./myapp"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("run %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+
+	for _, spelling := range []string{"--force", "-f", "-F", "--forcefully", "--forcibly"} {
+		if got := run("download", spelling, "x"); !strings.Contains(got, "force=[1]") {
+			t.Fatalf("alias %s did not set force: %q", spelling, got)
+		}
+	}
+	for _, spelling := range []string{"--output", "-o", "--out"} {
+		if got := run("download", spelling, "y", "x"); !strings.Contains(got, "output=[y]") {
+			t.Fatalf("alias %s did not set output: %q", spelling, got)
+		}
+	}
+}
+
+// TestFlagAliasHelpOutput: aliases appear in the generated usage/help text.
+func TestFlagAliasHelpOutput(t *testing.T) {
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: download
+    help: Download a file
+    flags:
+      - long: --force
+        short: -f
+        aliases: [-F, --forcefully]
+        help: Force it
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	for _, want := range []string{"-f", "--force", "-F", "--forcefully"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("help output missing alias spelling %q", want)
+		}
+	}
+}
+
+// TestFlagAliasConflictsNeeds: conflicts/needs that reference an alias resolve
+// to the canonical flag.
+func TestFlagAliasConflictsNeeds(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: download
+    help: Download a file
+    args:
+      - name: source
+        required: true
+    flags:
+      - long: --force
+        short: -f
+        aliases: [-F]
+      - long: --dry-run
+        short: -n
+        conflicts: [-F]
+      - long: --verbose
+        short: -v
+        needs: [-F]
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/download_command.sh", []byte("echo ok\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+
+	run := func(args ...string) (string, error) {
+		out, err := exec.Command("sh", append([]string{"./myapp"}, args...)...).CombinedOutput()
+		return string(out), err
+	}
+
+	// conflict: force (-F alias) with --dry-run must fail
+	if out, err := run("download", "-F", "-n", "x"); err == nil || !strings.Contains(out, "cannot be used together") {
+		t.Fatalf("alias conflict not detected: err=%v out=%q", err, out)
+	}
+	// needs satisfied: --verbose with force present (-F alias)
+	if out, err := run("download", "-F", "-v", "x"); err != nil {
+		t.Fatalf("needs unexpectedly failed: %v\n%s", err, out)
+	}
+	// needs unsatisfied: --verbose without force must fail
+	if out, err := run("download", "-v", "x"); err == nil || !strings.Contains(out, "requires") {
+		t.Fatalf("needs not detected: err=%v out=%q", err, out)
+	}
+}
+
+// TestFlagNegatableRuntime: --no-<flag> unsets a negatable boolean flag.
+func TestFlagNegatableRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: run
+    help: Run it
+    flags:
+      - long: --color
+        short: -c
+        negatable: true
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/run_command.sh", []byte("echo \"color=[$color]\"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("sh", append([]string{"./myapp"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("run %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	if got := run("run", "--color"); !strings.Contains(got, "color=[1]") {
+		t.Fatalf("--color did not set value: %q", got)
+	}
+	if got := run("run", "--no-color"); !strings.Contains(got, "color=[]") {
+		t.Fatalf("--no-color did not unset value: %q", got)
+	}
+	if got := run("run", "-c"); !strings.Contains(got, "color=[1]") {
+		t.Fatalf("-c did not set value: %q", got)
+	}
+}
+
+// TestFlagNegatableHelpOutput: help shows the --[no-] form.
+func TestFlagNegatableHelpOutput(t *testing.T) {
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: run
+    help: Run it
+    flags:
+      - long: --color
+        short: -c
+        negatable: true
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if !strings.Contains(out, "--[no-]color") {
+		t.Fatal("help output missing --[no-]color")
+	}
+}
+
+// TestFlagNegatableValidation: invalid negatable combinations are rejected.
+func TestFlagNegatableValidation(t *testing.T) {
+	cases := []struct {
+		name  string
+		flags []Flag
+	}{
+		{"arg", []Flag{{Long: "--color", Negatable: true, Arg: "mode"}}},
+		{"repeatable", []Flag{{Long: "--color", Negatable: true, Repeatable: true}}},
+		{"required", []Flag{{Long: "--color", Negatable: true, Required: true}}},
+		{"no-long", []Flag{{Short: "-c", Negatable: true}}},
+	}
+	for _, tc := range cases {
+		cfg := &ShellyCfg{
+			Name:     "myapp",
+			Commands: []Command{{Name: "run", Flags: tc.flags}},
+		}
+		if errs := cfg.validateSemantics(); len(errs) == 0 {
+			t.Fatalf("negatable+%s: expected validation error, got none", tc.name)
+		}
+	}
+	ok := &ShellyCfg{
+		Name:     "myapp",
+		Commands: []Command{{Name: "run", Flags: []Flag{{Long: "--color", Negatable: true}}}},
+	}
+	if errs := ok.validateSemantics(); len(errs) != 0 {
+		t.Fatalf("valid negatable reported errors: %v", errs)
+	}
+}
+
+// TestCommandPrefixAliasRuntime: a trailing "*" alias matches any token with
+// that prefix and dispatches to the owning command.
+func TestCommandPrefixAliasRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: foo
+    help: Foo command
+    alias: "fo*"
+  - name: bar
+    help: Bar command
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/foo_command.sh", []byte(`echo "ran foo"`+"\n"), 0o644)
+	os.WriteFile("src/bar_command.sh", []byte(`echo "ran bar"`+"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("sh", append([]string{"./myapp"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("run %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+
+	for _, tok := range []string{"fo", "foobar", "foo-x"} {
+		if got := run(tok); !strings.Contains(got, "ran foo") {
+			t.Fatalf("prefix alias %q did not dispatch to foo: %q", tok, got)
+		}
+	}
+	if got := run("bar"); !strings.Contains(got, "ran bar") {
+		t.Fatalf("exact name bar failed: %q", got)
+	}
+	if out, err := exec.Command("sh", "./myapp", "xyz").CombinedOutput(); err == nil {
+		t.Fatalf("unknown command should exit non-zero, got: %q", out)
+	}
+}
+
+// TestCommandPrefixAliasExactPriority: exact command names/aliases take priority
+// over prefix aliases (exact arms are emitted before prefix arms).
+func TestCommandPrefixAliasExactPriority(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: foo
+    help: Foo command
+  - name: fizz
+    help: Fizz command
+    alias: "fo*"
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/foo_command.sh", []byte(`echo "ran foo"`+"\n"), 0o644)
+	os.WriteFile("src/fizz_command.sh", []byte(`echo "ran fizz"`+"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("sh", append([]string{"./myapp"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("run %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+
+	// "foo" is an exact name and also matches the "fo*" prefix of fizz.
+	if got := run("foo"); !strings.Contains(got, "ran foo") {
+		t.Fatalf("exact name should beat prefix alias: %q", got)
+	}
+	// Non-exact tokens fall through to the prefix alias.
+	for _, tok := range []string{"fo", "foobar"} {
+		if got := run(tok); !strings.Contains(got, "ran fizz") {
+			t.Fatalf("prefix alias %q should dispatch to fizz: %q", tok, got)
+		}
+	}
+}
+
+// TestCommandPrefixAliasValidation: validateSemantics rejects malformed prefix
+// aliases (empty, equal to own name, or overlapping with another command).
+func TestCommandPrefixAliasValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		cmds []Command
+	}{
+		{"empty", []Command{{Name: "foo", Alias: "*"}}},
+		{"own-name", []Command{{Name: "fo", Alias: "fo*"}}},
+		{"ambiguous", []Command{
+			{Name: "a", Alias: "fo*"},
+			{Name: "b", Alias: "foobar*"},
+		}},
+	}
+	for _, tc := range cases {
+		cfg := &ShellyCfg{Name: "myapp", Commands: tc.cmds}
+		if errs := cfg.validateSemantics(); len(errs) == 0 {
+			t.Fatalf("prefix alias %s: expected validation error, got none", tc.name)
+		}
+	}
+	ok := &ShellyCfg{Name: "myapp", Commands: []Command{{Name: "foo", Alias: "fo*"}}}
+	if errs := ok.validateSemantics(); len(errs) != 0 {
+		t.Fatalf("valid prefix alias reported errors: %v", errs)
 	}
 }
 
@@ -2536,7 +3072,7 @@ func TestWordWrapInUsage(t *testing.T) {
 	cfg := &ShellyCfg{
 		Name:     "mytool",
 		Version:  "0.1.0",
-		WordWrap: 80,
+		WordWrap: WordWrapField{width: 80, explicit: true},
 		Commands: []Command{
 			{
 				Name: "deploy",
@@ -2581,16 +3117,16 @@ func TestWordWrapInUsage(t *testing.T) {
 	}
 }
 
-// TestWordWrapDefault: when word_wrap is 0 (default), long help strings are
-// emitted raw (no wrapping).
-func TestWordWrapDefault(t *testing.T) {
+// TestWordWrapDefaultsTo80: when word_wrap is unset, help text wraps at 80
+// so a long help string is split across echo lines.
+func TestWordWrapDefaultsTo80(t *testing.T) {
 	dir := t.TempDir()
 	oldwd, _ := os.Getwd()
 	defer os.Chdir(oldwd)
 	os.Chdir(dir)
 	os.MkdirAll("src", 0o755)
 
-	longHelp := "This is a very long help description that should not be wrapped because word_wrap is zero"
+	longHelp := "This is a very long help description that should be wrapped because word_wrap defaults to eighty"
 
 	cfg := &ShellyCfg{
 		Name:    "mytool",
@@ -2607,8 +3143,67 @@ func TestWordWrapDefault(t *testing.T) {
 		t.Fatalf("shellGen: %v", err)
 	}
 	s := readGenerated(t, "mytool")
+	if strings.Contains(s, longHelp) {
+		t.Fatal("word_wrap unset should wrap at 80, but the long help string was emitted raw")
+	}
+}
+
+// TestWordWrapDisabled: an explicit word_wrap of 0 (or false) disables wrapping,
+// so a long help string is emitted raw.
+func TestWordWrapDisabled(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	longHelp := "This is a very long help description that should not be wrapped because word_wrap is explicitly disabled"
+
+	cfg := &ShellyCfg{
+		Name:     "mytool",
+		Version:  "0.1.0",
+		WordWrap: WordWrapField{width: 0, explicit: true},
+		Commands: []Command{
+			{
+				Name:  "run",
+				Help:  "Run it",
+				Flags: []Flag{{Long: "--mode", Arg: "m", Help: longHelp}},
+			},
+		},
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	s := readGenerated(t, "mytool")
 	if !strings.Contains(s, longHelp) {
 		t.Fatal("word_wrap=0 should emit help string raw, but it was changed")
+	}
+}
+
+// TestWordWrapFieldParsing: word_wrap accepts int, bool, and string forms.
+func TestWordWrapFieldParsing(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want int
+	}{
+		{"unset defaults to 80", "name: x\n", 80},
+		{"int", "name: x\nword_wrap: 100\n", 100},
+		{"int zero disables", "name: x\nword_wrap: 0\n", 0},
+		{"false disables", "name: x\nword_wrap: false\n", 0},
+		{"true uses default", "name: x\nword_wrap: true\n", 80},
+		{"quoted int", "name: x\nword_wrap: \"60\"\n", 60},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var cfg ShellyCfg
+			if err := parseYAML([]byte(c.yaml), &cfg); err != nil {
+				t.Fatalf("parseYAML: %v", err)
+			}
+			if got := cfg.wordWrap(); got != c.want {
+				t.Fatalf("wordWrap() = %d, want %d", got, c.want)
+			}
+		})
 	}
 }
 
@@ -2709,9 +3304,9 @@ func TestShowExamplesOnErrorArg(t *testing.T) {
 	s := readGenerated(t, "mytool")
 
 	// find the arg parser function
-	start := strings.Index(s, "deploy_parse_args()")
+	start := strings.Index(s, "deploy_parse()")
 	if start == -1 {
-		t.Fatal("missing deploy_parse_args()")
+		t.Fatal("missing deploy_parse()")
 	}
 	parserEnd := strings.Index(s[start:], "\n}")
 	parserBody := s[start : start+parserEnd]
@@ -2753,9 +3348,9 @@ func TestShowExamplesOnErrorArgDisabled(t *testing.T) {
 	}
 	s := readGenerated(t, "mytool")
 
-	start := strings.Index(s, "deploy_parse_args()")
+	start := strings.Index(s, "deploy_parse()")
 	if start == -1 {
-		t.Fatal("missing deploy_parse_args()")
+		t.Fatal("missing deploy_parse()")
 	}
 	parserEnd := strings.Index(s[start:], "\n}")
 	parserBody := s[start : start+parserEnd]
@@ -2796,9 +3391,9 @@ func TestShowExamplesOnErrorFlag(t *testing.T) {
 	s := readGenerated(t, "mytool")
 
 	// find the flag parser function
-	start := strings.Index(s, "build_parse_flags()")
+	start := strings.Index(s, "build_parse()")
 	if start == -1 {
-		t.Fatal("missing build_parse_flags()")
+		t.Fatal("missing build_parse()")
 	}
 	parserEnd := strings.Index(s[start:], "\n}")
 	parserBody := s[start : start+parserEnd]
@@ -2839,9 +3434,9 @@ func TestShowExamplesOnErrorFlagDisabled(t *testing.T) {
 	}
 	s := readGenerated(t, "mytool")
 
-	start := strings.Index(s, "build_parse_flags()")
+	start := strings.Index(s, "build_parse()")
 	if start == -1 {
-		t.Fatal("missing build_parse_flags()")
+		t.Fatal("missing build_parse()")
 	}
 	parserEnd := strings.Index(s[start:], "\n}")
 	parserBody := s[start : start+parserEnd]
@@ -2961,8 +3556,9 @@ func TestFormatterShfmt(t *testing.T) {
 	}
 }
 
-// TestFormatterUnknown: an unrecognised formatter name returns an error.
-func TestFormatterUnknown(t *testing.T) {
+// TestFormatterCustomMissing: a custom formatter command that is not in PATH
+// returns an error.
+func TestFormatterCustomMissing(t *testing.T) {
 	dir := t.TempDir()
 	oldwd, _ := os.Getwd()
 	defer os.Chdir(oldwd)
@@ -2972,14 +3568,102 @@ func TestFormatterUnknown(t *testing.T) {
 	cfg := &ShellyCfg{
 		Name:      "mytool",
 		Version:   "0.1.0",
-		Formatter: "prettify",
+		Formatter: "definitely-not-a-real-formatter-xyz",
 	}
 	err := cfg.shellGen()
 	if err == nil {
-		t.Fatal("expected error for unknown formatter, got nil")
+		t.Fatal("expected error for missing custom formatter, got nil")
 	}
-	if !strings.Contains(err.Error(), "unknown formatter") {
+	if !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+// TestFormatterInternal: the internal formatter squashes runs of blank lines
+// to a single blank line and leaves normal content untouched.
+func TestFormatterInternal(t *testing.T) {
+	in := "a\n\n\n\nb\n\n   \n\nc\n"
+	got := internalFormat(in)
+	if strings.Contains(got, "\n\n\n") {
+		t.Fatalf("internalFormat left multiple blank lines: %q", got)
+	}
+	for _, want := range []string{"a", "b", "c"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("internalFormat dropped %q: %q", want, got)
+		}
+	}
+}
+
+// TestFormatterInternalRuntime: formatter: internal is applied during shellGen.
+func TestFormatterInternalRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{Name: "mytool", Version: "0.1.0", Formatter: "internal"}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen with formatter=internal: %v", err)
+	}
+	b, err := os.ReadFile("./mytool")
+	if err != nil {
+		t.Fatalf("read generated script: %v", err)
+	}
+	if strings.Contains(string(b), "\n\n\n") {
+		t.Fatal("generated script still contains multiple consecutive blank lines")
+	}
+}
+
+// TestFormatterCustomStdinStdout: a custom formatter command is run with the
+// script on stdin and its stdout is written back.
+func TestFormatterCustomStdinStdout(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{
+		Name:      "mytool",
+		Version:   "0.1.0",
+		Formatter: "sed s/0.1.0/9.9.9/",
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen with custom formatter: %v", err)
+	}
+	b, err := os.ReadFile("./mytool")
+	if err != nil {
+		t.Fatalf("read generated script: %v", err)
+	}
+	if !strings.Contains(string(b), "9.9.9") {
+		t.Fatal("custom formatter output was not written back to the script")
+	}
+}
+
+// TestSplitCommand covers the small shellwords splitter used for custom
+// formatter commands.
+func TestSplitCommand(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"shfmt --case-indent --indent 2", []string{"shfmt", "--case-indent", "--indent", "2"}},
+		{"sed 's/a b/c d/'", []string{"sed", "s/a b/c d/"}},
+		{`cmd "quoted arg"`, []string{"cmd", "quoted arg"}},
+		{"  lone  ", []string{"lone"}},
+		{"", nil},
+	}
+	for _, c := range cases {
+		got := splitCommand(c.in)
+		if len(got) != len(c.want) {
+			t.Fatalf("splitCommand(%q) = %v, want %v", c.in, got, c.want)
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Fatalf("splitCommand(%q) = %v, want %v", c.in, got, c.want)
+			}
+		}
 	}
 }
 
@@ -3010,10 +3694,10 @@ func TestCatchAllRequired(t *testing.T) {
 	}
 	s := readGenerated(t, "mytool")
 
-	// find the run_parse_flags function body
-	start := strings.Index(s, "run_parse_flags()")
+	// find the run_parse function body
+	start := strings.Index(s, "run_parse()")
 	if start == -1 {
-		t.Fatal("missing run_parse_flags()")
+		t.Fatal("missing run_parse()")
 	}
 	end := strings.Index(s[start:], "\nrun_command()")
 	if end == -1 {
@@ -3235,6 +3919,45 @@ func TestTabIndent(t *testing.T) {
 	}
 }
 
+// TestTabIndentUniform verifies that tab_indent applies to the whole generated
+// script (generator boilerplate AND user bodies).
+func TestTabIndentUniform(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	// Body with a pre-indented nested line (the case that previously stayed
+	// space-indented while the surrounding generated code used tabs).
+	os.WriteFile("src/root_command.sh", []byte("echo hello\nif true; then\n  echo nested\nfi\n"), 0o644)
+
+	tabsCfg := &ShellyCfg{Name: "myapp", Version: "1.0.0", TabIndent: true}
+	tabbed, err := tabsCfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString (tabs): %v", err)
+	}
+	spacesCfg := &ShellyCfg{Name: "myapp", Version: "1.0.0", TabIndent: false}
+	spaced, err := spacesCfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString (spaces): %v", err)
+	}
+
+	// No generated line may begin with two spaces when tab_indent is on.
+	for _, line := range strings.Split(tabbed, "\n") {
+		if strings.HasPrefix(line, "  ") {
+			t.Fatalf("tab-indented output has space-indented line: %q", line)
+		}
+	}
+	// At least some lines must actually be tab-indented.
+	if !strings.Contains(tabbed, "\n\t") {
+		t.Fatal("expected tab-indented lines in output")
+	}
+	// Tab output must be exactly expand_tabs of the 2-space output.
+	if got := expandTabs(spaced); got != tabbed {
+		t.Fatal("tab output is not expandTabs of the space-indented output")
+	}
+}
+
 // ─── Item 1/2: production mode ───────────────────────────────────────────────
 
 func TestProductionModeNoInspectArgs(t *testing.T) {
@@ -3351,6 +4074,65 @@ func TestUsageColorsCaption(t *testing.T) {
 	}
 }
 
+func TestAnsiCodeColorFunctionNames(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{"black", "\\033[30m"},
+		{"white", "\\033[37m"},
+		{"underlined", "\\033[4m"},
+		{"bold_underlined", "\\033[1;4m"},
+		{"red_bold", "\\033[1;31m"},
+		{"green_underlined", "\\033[4;32m"},
+		{"cyan_bold", "\\033[1;36m"},
+		{"white_underlined", "\\033[4;37m"},
+		{"dim", "\\033[2m"},
+		{"GREEN_UNDERLINED", "\\033[4;32m"}, // case-insensitive
+		{`\033[9m`, `\033[9m`},              // raw sequence passthrough
+		{"notacolor", "notacolor"},          // unknown passthrough
+	}
+	for _, tt := range tests {
+		got := ansiCode(tt.name)
+		if got != tt.want {
+			t.Errorf("ansiCode(%q) = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestUsageColorsColorFunctionNames(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	cfg := &ShellyCfg{
+		Name: "myapp", Version: "1.0.0",
+		UsageColors: UsageColors{Caption: "green_underlined"},
+		Commands:    []Command{{Name: "run", Help: "run stuff"}},
+	}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if !strings.Contains(out, "\\033[4;32m") {
+		t.Fatal("expected green_underlined ANSI code in usage output")
+	}
+	// Back-compat: a plain ANSI name still resolves.
+	cfg2 := &ShellyCfg{
+		Name: "myapp", Version: "1.0.0",
+		UsageColors: UsageColors{Caption: "bold"},
+		Commands:    []Command{{Name: "run", Help: "run stuff"}},
+	}
+	out2, err := cfg2.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if !strings.Contains(out2, "\\033[1m") {
+		t.Fatal("expected bold ANSI code in usage output")
+	}
+}
+
 // ─── Item 9: help multiline ───────────────────────────────────────────────────
 
 func TestHelpMultilineRoot(t *testing.T) {
@@ -3418,5 +4200,1468 @@ func TestAddAddonUpgrade(t *testing.T) {
 	// third write with upgrade — should succeed
 	if err := addAddon("colors", true); err != nil {
 		t.Fatalf("addAddon with upgrade: %v", err)
+	}
+}
+
+// ─── Item 6: dependency shorthand syntaxes ────────────────────────────────────
+
+func TestDependencyShorthandSyntaxes(t *testing.T) {
+	t.Run("sequence of names", func(t *testing.T) {
+		var cfg ShellyCfg
+		if err := parseYAML([]byte("name: myapp\ndependencies: [curl, git]\n"), &cfg); err != nil {
+			t.Fatalf("parseYAML: %v", err)
+		}
+		if len(cfg.Dependencies) != 2 ||
+			cfg.Dependencies[0].Name != "curl" || cfg.Dependencies[1].Name != "git" {
+			t.Fatalf("got %+v", cfg.Dependencies)
+		}
+	})
+
+	t.Run("mapping name to help", func(t *testing.T) {
+		var cfg ShellyCfg
+		if err := parseYAML([]byte("name: myapp\ndependencies:\n  curl: HTTP client\n"), &cfg); err != nil {
+			t.Fatalf("parseYAML: %v", err)
+		}
+		if len(cfg.Dependencies) != 1 ||
+			cfg.Dependencies[0].Name != "curl" || cfg.Dependencies[0].Help != "HTTP client" {
+			t.Fatalf("got %+v", cfg.Dependencies)
+		}
+	})
+
+	t.Run("mapping name to object with OR-list", func(t *testing.T) {
+		yaml := "name: myapp\ndependencies:\n  http_client:\n    command: [curl, wget]\n    help: HTTP client\n"
+		var cfg ShellyCfg
+		if err := parseYAML([]byte(yaml), &cfg); err != nil {
+			t.Fatalf("parseYAML: %v", err)
+		}
+		d := cfg.Dependencies
+		if len(d) != 1 || d[0].Name != "http_client" ||
+			strings.Join(d[0].Commands, ",") != "curl,wget" || d[0].Help != "HTTP client" {
+			t.Fatalf("got %+v", d)
+		}
+	})
+
+	t.Run("sequence of object form still works", func(t *testing.T) {
+		yaml := "name: myapp\ndependencies:\n  - name: curl\n    version: \"7\"\n"
+		var cfg ShellyCfg
+		if err := parseYAML([]byte(yaml), &cfg); err != nil {
+			t.Fatalf("parseYAML: %v", err)
+		}
+		if len(cfg.Dependencies) != 1 ||
+			cfg.Dependencies[0].Name != "curl" || cfg.Dependencies[0].Version != "7" {
+			t.Fatalf("got %+v", cfg.Dependencies)
+		}
+	})
+
+	t.Run("generated deps check covers names", func(t *testing.T) {
+		out := (&ShellyCfg{}).generateDepsCheck([]Dependency{{Name: "curl"}, {Name: "git"}})
+		if !strings.Contains(out, "command -v curl") || !strings.Contains(out, "command -v git") {
+			t.Fatalf("deps check missing names:\n%s", out)
+		}
+	})
+}
+
+// --- issue 0007: input normalization parity ---
+
+// TestCompactShortFlagsRuntime verifies combined short flags (-abc), a trailing
+// value flag inside a group, and conjoined -o=value parsing.
+func TestCompactShortFlagsRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: download
+    args:
+      - name: source
+        required: true
+    flags:
+      - long: --force
+        short: -f
+      - long: --verbose
+        short: -v
+      - long: --output
+        short: -o
+        arg: file
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/download_command.sh",
+		[]byte(`echo "source=[$source] force=[$force] verbose=[$verbose] output=[$output]"`+"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+
+	run := func(args ...string) (string, error) {
+		out, err := exec.Command("sh", append([]string{"./myapp"}, args...)...).CombinedOutput()
+		return string(out), err
+	}
+
+	out, err := run("download", "-fv", "x")
+	if err != nil || !strings.Contains(out, "force=[1]") || !strings.Contains(out, "verbose=[1]") {
+		t.Fatalf("-fv: err=%v out=%s", err, out)
+	}
+	out, err = run("download", "-vf", "x")
+	if err != nil || !strings.Contains(out, "force=[1]") || !strings.Contains(out, "verbose=[1]") {
+		t.Fatalf("-vf: err=%v out=%s", err, out)
+	}
+	out, err = run("download", "-fo", "out.txt", "x")
+	if err != nil || !strings.Contains(out, "force=[1]") || !strings.Contains(out, "output=[out.txt]") {
+		t.Fatalf("-fo: err=%v out=%s", err, out)
+	}
+	out, err = run("download", "-o=out.txt", "x")
+	if err != nil || !strings.Contains(out, "output=[out.txt]") {
+		t.Fatalf("-o=out.txt: err=%v out=%s", err, out)
+	}
+	if _, err := run("download", "-abc", "x"); err == nil {
+		t.Fatalf("expected unknown cluster -abc to fail")
+	}
+}
+
+// TestArgumentNormalizationSettings verifies compact_short_flags and
+// conjoined_flag_args can disable the new behavior.
+func TestArgumentNormalizationSettings(t *testing.T) {
+	setup := func(t *testing.T, extra string) {
+		dir := t.TempDir()
+		oldwd, _ := os.Getwd()
+		t.Cleanup(func() { os.Chdir(oldwd) })
+		os.Chdir(dir)
+		os.MkdirAll("src", 0o755)
+		yaml := "name: myapp\nversion: 1.0.0\n" + extra + `
+commands:
+  - name: download
+    args:
+      - name: source
+        required: true
+    flags:
+      - long: --force
+        short: -f
+      - long: --verbose
+        short: -v
+      - long: --output
+        short: -o
+        arg: file
+`
+		var cfg ShellyCfg
+		if err := parseYAML([]byte(yaml), &cfg); err != nil {
+			t.Fatalf("parseYAML: %v", err)
+		}
+		os.WriteFile("src/download_command.sh",
+			[]byte(`echo "force=[$force] verbose=[$verbose] output=[$output]"`+"\n"), 0o644)
+		if err := cfg.shellGen(); err != nil {
+			t.Fatalf("shellGen: %v", err)
+		}
+	}
+	run := func(args ...string) (string, error) {
+		out, err := exec.Command("sh", append([]string{"./myapp"}, args...)...).CombinedOutput()
+		return string(out), err
+	}
+
+	t.Run("compact disabled rejects combined flags", func(t *testing.T) {
+		setup(t, "compact_short_flags: false\n")
+		if _, err := run("download", "-fv", "x"); err == nil {
+			t.Fatalf("expected -fv to fail when compact_short_flags=false")
+		}
+	})
+
+	t.Run("conjoined disabled rejects -o=value but keeps -o value", func(t *testing.T) {
+		setup(t, "conjoined_flag_args: false\n")
+		if _, err := run("download", "-o=out.txt", "x"); err == nil {
+			t.Fatalf("expected -o=out.txt to fail when conjoined_flag_args=false")
+		}
+		out, err := run("download", "-o", "out.txt", "x")
+		if err != nil || !strings.Contains(out, "output=[out.txt]") {
+			t.Fatalf("-o out.txt: err=%v out=%s", err, out)
+		}
+	})
+}
+
+// TestNoEvalInGeneratedScript guards the "no eval of user input" criterion.
+func TestNoEvalInGeneratedScript(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: download
+    args:
+      - name: source
+        required: true
+    flags:
+      - long: --output
+        short: -o
+        arg: file
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/download_command.sh", []byte("echo hi\n"), 0o644)
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if strings.Contains(out, "eval ") {
+		t.Fatalf("generated script must not contain eval:\n%s", out)
+	}
+}
+
+// runGenerated runs the generated script at relPath with args and returns output.
+func runGenerated(t *testing.T, relPath string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("sh", append([]string{relPath}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("run %s %v: %v\n%s", relPath, args, err, out)
+	}
+	return string(out)
+}
+
+// TestSourceDirRuntime: source_dir relocates the src tree.
+func TestSourceDirRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	if err := os.MkdirAll("mysrc", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `
+name: myapp
+source_dir: mysrc
+commands:
+  - name: download
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("mysrc/download_command.sh", []byte("echo \"ran download\"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	if got := runGenerated(t, "./myapp", "download"); !strings.Contains(got, "ran download") {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
+// TestTargetDirRuntime: target_dir relocates the generated script.
+func TestTargetDirRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	yaml := `
+name: myapp
+target_dir: bin
+commands:
+  - name: download
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/download_command.sh", []byte("echo \"ran download\"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	if _, err := os.Stat("bin/myapp"); err != nil {
+		t.Fatalf("expected bin/myapp to exist: %v", err)
+	}
+	if got := runGenerated(t, "./bin/myapp", "download"); !strings.Contains(got, "ran download") {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
+// TestLibDirRuntime: lib_dir (relative to source_dir) is where library files live.
+func TestLibDirRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	if err := os.MkdirAll("mysrc/mylibs", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `
+name: myapp
+source_dir: mysrc
+lib_dir: mylibs
+commands:
+  - name: download
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("mysrc/mylibs/greet.sh", []byte("echo \"hello $1\"\n"), 0o644)
+	os.WriteFile("mysrc/download_command.sh", []byte("greet world\necho done\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	got := runGenerated(t, "./myapp", "download")
+	if !strings.Contains(got, "hello world") || !strings.Contains(got, "done") {
+		t.Fatalf("lib_dir not searched: %q", got)
+	}
+}
+
+// TestExtraLibDirsRuntime: extra_lib_dirs are searched in addition to lib_dir.
+func TestExtraLibDirsRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src/lib", 0o755)
+	os.MkdirAll("extra", 0o755)
+	yaml := `
+name: myapp
+extra_lib_dirs: [extra]
+commands:
+  - name: download
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/lib/localfn.sh", []byte("echo \"local\"\n"), 0o644)
+	os.WriteFile("extra/extra_fn.sh", []byte("echo \"extra here\"\n"), 0o644)
+	os.WriteFile("src/download_command.sh", []byte("localfn\nextra_fn\necho done\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	got := runGenerated(t, "./myapp", "download")
+	if !strings.Contains(got, "local") || !strings.Contains(got, "extra here") || !strings.Contains(got, "done") {
+		t.Fatalf("extra_lib_dirs not searched: %q", got)
+	}
+}
+
+// TestCommandsDirRuntime: commands_dir places each body in a per-command subfolder.
+func TestCommandsDirRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	if err := os.MkdirAll("src/commands/download", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `
+name: myapp
+commands_dir: commands
+commands:
+  - name: download
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/commands/download/download_command.sh", []byte("echo \"ran download\"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	if got := runGenerated(t, "./myapp", "download"); !strings.Contains(got, "ran download") {
+		t.Fatalf("commands_dir not read: %q", got)
+	}
+}
+
+// TestCommandsDirSkeleton: shellGenCommands scaffolds the body in the nested path.
+func TestCommandsDirSkeleton(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	yaml := `
+name: myapp
+commands_dir: commands
+commands:
+  - name: download
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	cfg.shellGenCommands()
+	if _, err := os.Stat("src/commands/download/download_command.sh"); err != nil {
+		t.Fatalf("expected nested skeleton: %v", err)
+	}
+}
+
+// TestPathSettingsParity: defaults preserve today's layout and resolvers behave.
+func TestPathSettingsParity(t *testing.T) {
+	var cfg ShellyCfg
+	cfg.Name = "myapp"
+	if got := cfg.sourceDir(); got != "src" {
+		t.Fatalf("default sourceDir = %q, want src", got)
+	}
+	if got := cfg.targetDir(); got != "." {
+		t.Fatalf("default targetDir = %q, want .", got)
+	}
+	if got := cfg.libDir(); got != filepath.Join("src", "lib") {
+		t.Fatalf("default libDir = %q", got)
+	}
+	if got := cfg.commandPath("download"); got != filepath.Join("src", "download_command.sh") {
+		t.Fatalf("default commandPath = %q", got)
+	}
+	if got := cfg.outputPath(); got != "myapp" {
+		t.Fatalf("default outputPath = %q", got)
+	}
+}
+
+// TestExtraLibDirsParsing: comma scalar, sequence, and "~" (none).
+func TestExtraLibDirsParsing(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want []string
+	}{
+		{"sequence", "name: myapp\nextra_lib_dirs: [a, b]\n", []string{"a", "b"}},
+		{"comma scalar", "name: myapp\nextra_lib_dirs: a, b\n", []string{"a", "b"}},
+		{"none tilde", "name: myapp\nextra_lib_dirs: \"~\"\n", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg ShellyCfg
+			if err := parseYAML([]byte(tc.yaml), &cfg); err != nil {
+				t.Fatalf("parseYAML: %v", err)
+			}
+			if len(cfg.ExtraLibDirs) != len(tc.want) {
+				t.Fatalf("ExtraLibDirs = %v, want %v", cfg.ExtraLibDirs, tc.want)
+			}
+			for i, w := range tc.want {
+				if cfg.ExtraLibDirs[i] != w {
+					t.Fatalf("ExtraLibDirs = %v, want %v", cfg.ExtraLibDirs, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestStrictFieldParsing: StrictField accepts bools, "", and custom strings.
+func TestStrictFieldParsing(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"true", "name: myapp\nstrict: true\n", "set -euo pipefail\nIFS=$'\\n\\t'"},
+		{"false", "name: myapp\nstrict: false\n", "set -e"},
+		{"empty string", "name: myapp\nstrict: \"\"\n", ""},
+		{"custom", "name: myapp\nstrict: \"set -eux\"\n", "set -eux"},
+		{"absent", "name: myapp\n", "set -e"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg ShellyCfg
+			if err := parseYAML([]byte(tc.yaml), &cfg); err != nil {
+				t.Fatalf("parseYAML: %v", err)
+			}
+			if got := cfg.Strict.Directive(); got != tc.want {
+				t.Fatalf("Directive() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStrictModes: generated initialize() emits the right set directive per mode.
+func TestStrictModes(t *testing.T) {
+	cases := []struct {
+		name     string
+		strict   StrictField
+		wantLine string
+		noLine   string
+	}{
+		{"default false", StrictField{}, "set -e", "set -euo pipefail"},
+		{"true", StrictField{boolVal: true}, "set -euo pipefail", ""},
+		{"empty none", StrictField{isString: true, strVal: ""}, "", "set -e"},
+		{"custom", StrictField{isString: true, strVal: "set -eux"}, "set -eux", "set -euo pipefail"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			oldwd, _ := os.Getwd()
+			defer os.Chdir(oldwd)
+			os.Chdir(dir)
+			os.MkdirAll("src", 0o755)
+			os.WriteFile("src/build_command.sh", []byte("echo build\n"), 0o644)
+
+			cfg := &ShellyCfg{
+				Name:     "mytool",
+				Version:  "0.1.0",
+				Strict:   tc.strict,
+				Commands: []Command{{Name: "build", Help: "Build it"}},
+			}
+			if err := cfg.shellGen(); err != nil {
+				t.Fatalf("shellGen: %v", err)
+			}
+			s := readGenerated(t, "mytool")
+			if tc.wantLine != "" && !strings.Contains(s, tc.wantLine) {
+				t.Fatalf("expected %q in output", tc.wantLine)
+			}
+			if tc.noLine != "" {
+				for _, line := range strings.Split(s, "\n") {
+					if strings.TrimSpace(line) == tc.noLine || strings.HasPrefix(strings.TrimSpace(line), tc.noLine+" ") {
+						t.Fatalf("did not expect %q, found line %q", tc.noLine, line)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestExpandMessage covers placeholder substitution and shell escaping.
+func TestExpandMessage(t *testing.T) {
+	if got, want := expandMessage(`Error: %{name} must be one of: %{allowed}`,
+		map[string]string{"name": "--x", "allowed": "a, b"}),
+		`Error: --x must be one of: a, b`; got != want {
+		t.Fatalf("gen-time: got %q want %q", got, want)
+	}
+	if got, want := expandMessage("Unknown flag: %s", nil, "$1"), "Unknown flag: $1"; got != want {
+		t.Fatalf("runtime: got %q want %q", got, want)
+	}
+	if got, want := expandMessage(`say "hi" $USER`, nil), `say \"hi\" \$USER`; got != want {
+		t.Fatalf("escape: got %q want %q", got, want)
+	}
+	if got, want := expandMessage("a %s b %s", nil, "$1", "$2"), "a $1 b $2"; got != want {
+		t.Fatalf("two runtime: got %q want %q", got, want)
+	}
+}
+
+// TestMessageDefaultsGenerated checks the built-in messages are emitted.
+func TestMessageDefaultsGenerated(t *testing.T) {
+	s := (&ShellyCfg{Name: "mytool"}).generateParser("mytool", Command{Name: "mytool"}, true)
+	if !strings.Contains(s, `Unknown flag: $1`) {
+		t.Fatalf("default invalid_flag missing:\n%s", s)
+	}
+}
+
+// TestStringsOverrideRuntime checks src/shelly-strings.yml overrides messages in
+// the generated script.
+func TestStringsOverrideRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.MkdirAll("src", 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: download
+    help: Download a file
+    args:
+      - name: source
+        required: true
+    flags:
+      - long: --force
+        short: -f
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	stringsYAML := `
+invalid_flag: "bad option: %s"
+missing_required_argument: "need <%{name}>"
+`
+	if err := os.WriteFile("src/shelly-strings.yml", []byte(stringsYAML), 0o644); err != nil {
+		t.Fatalf("write strings: %v", err)
+	}
+	if err := os.WriteFile("src/download_command.sh",
+		[]byte("echo \"source=[$source]\"\n"), 0o644); err != nil {
+		t.Fatalf("write body: %v", err)
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+
+	out, _ := exec.Command("sh", "./myapp", "download", "--nope", "x").CombinedOutput()
+	if !strings.Contains(string(out), "bad option: --nope") {
+		t.Fatalf("custom invalid_flag not used:\n%s", out)
+	}
+	out2, err := exec.Command("sh", "./myapp", "download").CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected missing-arg failure, got success:\n%s", out2)
+	}
+	if !strings.Contains(string(out2), "need <source>") {
+		t.Fatalf("custom missing_required_argument not used:\n%s", out2)
+	}
+}
+
+// TestAddStringsAddon checks `shelly add strings` scaffolds a loadable file.
+func TestAddStringsAddon(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.MkdirAll("src", 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := addAddon("strings", false); err != nil {
+		t.Fatalf("addAddon: %v", err)
+	}
+	data, err := os.ReadFile("src/shelly-strings.yml")
+	if err != nil {
+		t.Fatalf("read scaffold: %v", err)
+	}
+	if !strings.Contains(string(data), "invalid_flag:") ||
+		!strings.Contains(string(data), "missing_required_argument:") {
+		t.Fatalf("scaffold missing keys:\n%s", data)
+	}
+	// scaffold must be loadable and every default key must round-trip
+	var cfg ShellyCfg
+	if err := cfg.loadStrings(); err != nil {
+		t.Fatalf("loadStrings: %v", err)
+	}
+	if len(cfg.messages) != len(defaultMessages) {
+		t.Fatalf("scaffold loaded %d messages, want %d", len(cfg.messages), len(defaultMessages))
+	}
+	for k, v := range defaultMessages {
+		if cfg.messages[k] != v {
+			t.Fatalf("scaffold key %q = %q, want %q", k, cfg.messages[k], v)
+		}
+	}
+	// second add without upgrade must fail
+	if err := addAddon("strings", false); err == nil {
+		t.Fatalf("expected error adding strings twice without upgrade")
+	}
+}
+
+// ─── Item 14: yaml/config/ini addon libraries ────────────────────────────────
+
+func TestAddYamlIniConfigAddons(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	// deliberately do NOT pre-create src/lib: add must create it
+
+	if err := addAddon("yaml", false); err != nil {
+		t.Fatalf("addAddon yaml: %v", err)
+	}
+	if b, err := os.ReadFile("src/lib/yaml.sh"); err != nil || !strings.Contains(string(b), "yaml_load()") {
+		t.Fatalf("yaml.sh missing/invalid: %v", err)
+	}
+	if err := addAddon("ini", false); err != nil {
+		t.Fatalf("addAddon ini: %v", err)
+	}
+	if b, err := os.ReadFile("src/lib/ini.sh"); err != nil || !strings.Contains(string(b), "ini_load()") {
+		t.Fatalf("ini.sh missing/invalid: %v", err)
+	}
+	if err := addAddon("config", true); err != nil {
+		t.Fatalf("addAddon config: %v", err)
+	}
+	if b, err := os.ReadFile("src/lib/config.sh"); err != nil || !strings.Contains(string(b), "config_get()") {
+		t.Fatalf("config.sh missing/invalid: %v", err)
+	}
+	// config also refreshes ini.sh
+	if _, err := os.Stat("src/lib/ini.sh"); err != nil {
+		t.Fatalf("config addon should also write ini.sh: %v", err)
+	}
+	// second add without upgrade fails, with upgrade succeeds
+	if err := addAddon("yaml", false); err == nil {
+		t.Fatal("expected error adding yaml twice without upgrade")
+	}
+	if err := addAddon("yaml", true); err != nil {
+		t.Fatalf("addAddon yaml upgrade: %v", err)
+	}
+}
+
+// TestVerbatimLibFunctions: a lib file defining functions is emitted as-is,
+// while a body-only lib file is wrapped as <stem>() { ... }.
+func TestVerbatimLibFunctions(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.MkdirAll("src/lib", 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	os.WriteFile("src/lib/mylib.sh", []byte("foo() {\n  echo foo\n}\n\nbar() {\n  foo\n}\n"), 0o644)
+	os.WriteFile("src/lib/greet.sh", []byte("echo \"hello $1\"\n"), 0o644)
+
+	cfg := &ShellyCfg{Name: "testapp", Version: "0.1.0"}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	s := readGenerated(t, "testapp")
+	if !strings.Contains(s, "foo() {") || !strings.Contains(s, "bar() {") {
+		t.Fatalf("verbatim functions missing\n%s", s)
+	}
+	if strings.Contains(s, "mylib() {") {
+		t.Fatalf("verbatim lib should not be wrapped as mylib()")
+	}
+	if !strings.Contains(s, "greet() {") {
+		t.Fatalf("body-only lib should be wrapped as greet()")
+	}
+}
+
+// TestVerbatimLibDuplicateDetection: duplicate function names across lib units
+// are fatal even when one comes from a verbatim (multi-function) file.
+func TestVerbatimLibDuplicateDetection(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.MkdirAll("src/lib", 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	os.WriteFile("src/lib/a.sh", []byte("dupe() {\n  echo a\n}\n"), 0o644)
+	os.WriteFile("src/lib/dupe.sh", []byte("echo b\n"), 0o644)
+
+	cfg := &ShellyCfg{Name: "testapp", Version: "0.1.0"}
+	if err := cfg.shellGen(); err == nil {
+		t.Fatal("expected duplicate function error")
+	}
+}
+
+// TestIniLibraryRuntime: the embedded ini library works in a generated script.
+func TestIniLibraryRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.MkdirAll("src/lib", 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	os.WriteFile("src/lib/ini.sh", []byte(iniContent), 0o644)
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: show
+    help: Show config
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/show_command.sh",
+		[]byte("ini_load config.ini\necho \"name=$(ini_get name) user=$(ini_get login.user) dflt=$(ini_get nope.x fallback)\"\n"), 0o644)
+	os.WriteFile("config.ini", []byte("name = Alice\n\n[login]\nuser = bob\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	out, err := exec.Command("sh", "./myapp", "show").CombinedOutput()
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	got := string(out)
+	for _, want := range []string{"name=Alice", "user=bob", "dflt=fallback"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+}
+
+func writeLibrarySourceFixture(t *testing.T) {
+	t.Helper()
+	if err := os.MkdirAll("libsrc/scripts/util", 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	yaml := `
+hello:
+  help: A greeting library
+  post_install_message: Add hello to your before hook
+  files:
+    - source: scripts/hello.sh
+      target: '%{user_source_dir}/lib/hello.sh'
+    - source: scripts/util/extra.sh
+      target: '%{user_lib_dir}/extra_%{user_ext}.sh'
+skip:
+  help: Works without a source dir
+  skip_src_check: true
+  files:
+    - source: scripts/hello.sh
+      target: '%{user_lib_dir}/hello.sh'
+`
+	if err := os.WriteFile("libsrc/libraries.yml", []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write libraries.yml: %v", err)
+	}
+	os.WriteFile("libsrc/scripts/hello.sh", []byte("# [@shelly-upgrade]\nhello() { echo hi; }\n"), 0o644)
+	os.WriteFile("libsrc/scripts/util/extra.sh", []byte("extra() { echo extra; }\n"), 0o644)
+}
+
+// TestLibrarySourceInstall: a libraries.yml source installs files to resolved
+// %{user_*} targets and substitutes the upgrade marker.
+func TestLibrarySourceInstall(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	writeLibrarySourceFixture(t)
+
+	if err := addFromSource("libsrc", "hello", false, false); err != nil {
+		t.Fatalf("addFromSource: %v", err)
+	}
+	got, err := os.ReadFile("src/lib/hello.sh")
+	if err != nil {
+		t.Fatalf("read hello: %v", err)
+	}
+	if !strings.Contains(string(got), "[@shelly-upgrade libsrc;hello]") {
+		t.Fatalf("marker not substituted: %q", got)
+	}
+	if _, err := os.Stat("src/lib/extra_sh.sh"); err != nil {
+		t.Fatalf("extra target not resolved: %v", err)
+	}
+
+	// Existing files are skipped without --upgrade.
+	os.WriteFile("src/lib/hello.sh", []byte("local change\n"), 0o644)
+	if err := addFromSource("libsrc", "hello", false, false); err != nil {
+		t.Fatalf("second add: %v", err)
+	}
+	got, _ = os.ReadFile("src/lib/hello.sh")
+	if !strings.Contains(string(got), "local change") {
+		t.Fatalf("file overwritten without upgrade: %q", got)
+	}
+
+	// --upgrade overwrites.
+	if err := addFromSource("libsrc", "hello", true, false); err != nil {
+		t.Fatalf("upgrade add: %v", err)
+	}
+	got, _ = os.ReadFile("src/lib/hello.sh")
+	if !strings.Contains(string(got), "hello() {") {
+		t.Fatalf("upgrade did not overwrite: %q", got)
+	}
+}
+
+// TestLibrarySourceSkipSrcCheck: skip_src_check bypasses the source-dir guard.
+func TestLibrarySourceSkipSrcCheck(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	writeLibrarySourceFixture(t) // intentionally no src/ created
+
+	// A library without skip_src_check errors when src/ is missing.
+	if err := addFromSource("libsrc", "hello", false, false); err == nil {
+		t.Fatalf("expected error when src dir missing and skip_src_check false")
+	}
+	// skip_src_check bypasses the source-dir guard.
+	if err := addFromSource("libsrc", "skip", false, false); err != nil {
+		t.Fatalf("skip_src_check install failed: %v", err)
+	}
+	if _, err := os.Stat("src/lib/hello.sh"); err != nil {
+		t.Fatalf("file not installed: %v", err)
+	}
+}
+
+// TestLibrarySourceUnknown: an unknown library is a clear error.
+func TestLibrarySourceUnknown(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	writeLibrarySourceFixture(t)
+
+	err := addFromSource("libsrc", "nope", false, false)
+	if err == nil || !strings.Contains(err.Error(), "unknown library") {
+		t.Fatalf("want unknown-library error, got %v", err)
+	}
+	if err := listLibraries("libsrc"); err != nil {
+		t.Fatalf("listLibraries: %v", err)
+	}
+	if _, err := loadLibrarySource("does-not-exist"); err == nil {
+		t.Fatalf("expected error for a missing source directory")
+	}
+}
+
+// TestResolveLibraryTarget: %{user_*} tokens expand to the config defaults.
+func TestResolveLibraryTarget(t *testing.T) {
+	cfg := &ShellyCfg{}
+	cases := map[string]string{
+		"%{user_source_dir}/lib/x.sh":   "src/lib/x.sh",
+		"%{user_target_dir}/x":          "./x",
+		"%{user_lib_dir}/y.%{user_ext}": "src/lib/y.sh",
+	}
+	for in, want := range cases {
+		if got := resolveLibraryTarget(in, cfg); got != want {
+			t.Fatalf("resolveLibraryTarget(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestAddonUpgradeMarkers: every built-in addon writes the upgrade marker.
+func TestAddonUpgradeMarkers(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+
+	assertMarker := func(path, name string) {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		want := "[@shelly-upgrade " + name + "]"
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("%s missing marker %q: %q", path, want, b)
+		}
+	}
+
+	order := []struct{ name, path string }{
+		{"validations", "src/lib/validations.sh"},
+		{"colors", "src/lib/colors.sh"},
+		{"yaml", "src/lib/yaml.sh"},
+		{"ini", "src/lib/ini.sh"},
+		{"hooks", "src/before.sh"},
+		{"preamble", "src/preamble.sh"},
+		{"strings", "src/shelly-strings.yml"},
+	}
+	for _, tc := range order {
+		if err := addAddon(tc.name, false); err != nil {
+			t.Fatalf("addAddon %s: %v", tc.name, err)
+		}
+		assertMarker(tc.path, tc.name)
+	}
+	// config installs config.sh (and refreshes ini.sh); check the config marker.
+	if err := addAddon("config", true); err != nil {
+		t.Fatalf("addAddon config: %v", err)
+	}
+	assertMarker("src/lib/config.sh", "config")
+}
+
+// TestGenerateUpgradeBuiltin: upgradeLibs refreshes a marked built-in file.
+func TestGenerateUpgradeBuiltin(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+
+	if err := addAddon("colors", false); err != nil {
+		t.Fatalf("addAddon: %v", err)
+	}
+	// Corrupt the file while keeping the marker.
+	os.WriteFile("src/lib/colors.sh", []byte("## [@shelly-upgrade colors]\ncorrupted\n"), 0o644)
+
+	if err := upgradeLibs(&ShellyCfg{}); err != nil {
+		t.Fatalf("upgradeLibs: %v", err)
+	}
+	b, err := os.ReadFile("src/lib/colors.sh")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(b), "red()") {
+		t.Fatalf("builtin not restored: %q", b)
+	}
+	if !strings.Contains(string(b), "[@shelly-upgrade colors]") {
+		t.Fatalf("marker lost after upgrade: %q", b)
+	}
+}
+
+// TestGenerateUpgradeCustomSource: upgradeLibs refreshes a marked file installed
+// from a custom libraries source.
+func TestGenerateUpgradeCustomSource(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	writeLibrarySourceFixture(t)
+
+	if err := addFromSource("libsrc", "hello", false, false); err != nil {
+		t.Fatalf("addFromSource: %v", err)
+	}
+	// Corrupt the file while keeping the fully-qualified marker.
+	os.WriteFile("src/lib/hello.sh", []byte("# [@shelly-upgrade libsrc;hello]\ncorrupted\n"), 0o644)
+
+	if err := upgradeLibs(&ShellyCfg{}); err != nil {
+		t.Fatalf("upgradeLibs: %v", err)
+	}
+	b, err := os.ReadFile("src/lib/hello.sh")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(b), "hello() {") {
+		t.Fatalf("custom source not restored: %q", b)
+	}
+}
+
+// TestGenerateUpgradeUnknownLibraryWarns: an unknown library is a warning, not
+// a failure, and its file is left untouched.
+func TestGenerateUpgradeUnknownLibraryWarns(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src/lib", 0o755)
+	os.WriteFile("src/lib/custom.sh", []byte("## [@shelly-upgrade nosuchlib]\necho hi\n"), 0o644)
+
+	if err := upgradeLibs(&ShellyCfg{}); err != nil {
+		t.Fatalf("upgradeLibs should not fail on unknown library: %v", err)
+	}
+	b, _ := os.ReadFile("src/lib/custom.sh")
+	if !strings.Contains(string(b), "echo hi") {
+		t.Fatalf("unknown-library file was modified: %q", b)
+	}
+}
+
+// TestUpgradeMarkerStrippedFromOutput: the upgrade marker lives in the source
+// files but must not appear in the generated script.
+func TestUpgradeMarkerStrippedFromOutput(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	var cfg ShellyCfg
+	if err := parseYAML([]byte("name: myapp\ncommands:\n  - name: greet\n    help: hi\n"), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/greet_command.sh", []byte("echo hi\n"), 0o644)
+	if err := addAddon("colors", false); err != nil {
+		t.Fatalf("addAddon: %v", err)
+	}
+
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if strings.Contains(out, "[@shelly-upgrade") {
+		t.Fatalf("upgrade marker leaked into generated script")
+	}
+	if !strings.Contains(out, "red()") {
+		t.Fatalf("colors library missing from generated script")
+	}
+}
+
+// TestStripDesiredCommentsUnit exercises the "##" line filter directly.
+func TestStripDesiredCommentsUnit(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"## note\n", ""},
+		{"  ## indented\n", ""},
+		{"\t## tab-indented\n", ""},
+		{"## last line no newline", ""},
+		{"### triple\n", ""},
+		{"# keep\n", "# keep\n"},
+		{"#!/bin/sh\n", "#!/bin/sh\n"},
+		{"echo hi\n## gone\necho bye\n", "echo hi\necho bye\n"},
+		{"echo '# not a comment'\n", "echo '# not a comment'\n"},
+	}
+	for _, c := range cases {
+		if got := stripDesiredComments(c.in); got != c.want {
+			t.Errorf("stripDesiredComments(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestStripDesiredCommentsGenerated: "##" comments are dropped from command
+// bodies, lib files, and overridable partials, while ordinary "#" comments and
+// content survive.
+func TestStripDesiredCommentsGenerated(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src/lib", 0o755)
+
+	var cfg ShellyCfg
+	if err := parseYAML([]byte("name: myapp\ncommands:\n  - name: build\n    help: build it\n"), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/build_command.sh",
+		[]byte("echo build\n## desired-command note\n# visible note\n"), 0o644)
+	os.WriteFile("src/lib/greet.sh",
+		[]byte("## lib build note\ngreet() {\n  echo hello\n}\n"), 0o644)
+	os.WriteFile("src/before.sh",
+		[]byte("## partial build note\n:\n"), 0o644)
+
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	for _, leaked := range []string{"desired-command note", "lib build note", "partial build note"} {
+		if strings.Contains(out, leaked) {
+			t.Errorf("desired comment %q leaked into generated script", leaked)
+		}
+	}
+	if !strings.Contains(out, "# visible note") {
+		t.Errorf("ordinary # comment was stripped from generated script")
+	}
+	if !strings.Contains(out, "echo build") || !strings.Contains(out, "echo hello") {
+		t.Errorf("body/lib content missing from generated script")
+	}
+}
+
+func TestConfigImportMerge(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	if err := os.MkdirAll("src", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile("src/"+name, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("shelly.yml", `name: cli
+version: 0.1.0
+commands:
+  - import: download.yml
+  - import: upload.sh
+`)
+	write("common_flags.yml", `- long: --force
+  short: -f
+  help: Overwrite existing files
+`)
+	write("download.yml", `name: download
+alias: d
+help: Download a file
+args:
+  - name: source
+    required: true
+flags:
+  import: common_flags.yml
+`)
+	write("upload.sh", `# front matter
+name: upload
+alias: u
+help: Upload a file
+args:
+  - name: source
+    required: true
+flags:
+  import: common_flags.yml
+---
+echo "uploading $source"
+`)
+
+	cfg, err := readConfigE()
+	if err != nil {
+		t.Fatalf("readConfigE: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("readConfigE returned nil config")
+	}
+	if len(cfg.Commands) != 2 {
+		t.Fatalf("expected 2 imported commands, got %d", len(cfg.Commands))
+	}
+	for _, c := range cfg.Commands {
+		if len(c.Args) != 1 || c.Args[0].Name != "source" || !c.Args[0].Required {
+			t.Errorf("command %q: unexpected args: %+v", c.Name, c.Args)
+		}
+		if len(c.Flags) != 1 || c.Flags[0].Long != "--force" || c.Flags[0].Short != "-f" {
+			t.Errorf("command %q: nested flags import not merged: %+v", c.Name, c.Flags)
+		}
+	}
+	if cfg.Commands[0].Name != "download" || cfg.Commands[1].Name != "upload" {
+		t.Errorf("unexpected command order/names: %q, %q", cfg.Commands[0].Name, cfg.Commands[1].Name)
+	}
+}
+
+func TestConfigImportErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		config  string
+		files   map[string]string
+		wantSub string
+	}{
+		{
+			name:    "missing import file",
+			config:  "name: cli\ncommands:\n  - import: nope.yml\n",
+			wantSub: "cannot find import file",
+		},
+		{
+			name:    "sh without front matter",
+			config:  "name: cli\ncommands:\n  - import: plain.sh\n",
+			files:   map[string]string{"plain.sh": "echo hi\n"},
+			wantSub: "front matter",
+		},
+		{
+			name:    "invalid yaml",
+			config:  "name: cli\ncommands:\n  - import: bad.yml\n",
+			files:   map[string]string{"bad.yml": "name: x\n  bad: : :\n"},
+			wantSub: "cannot parse import file",
+		},
+		{
+			name:    "non-mapping root",
+			config:  "name: cli\ncommands:\n  - import: scalar.yml\n",
+			files:   map[string]string{"scalar.yml": "just a scalar\n"},
+			wantSub: "cannot find a valid YAML",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			oldwd, _ := os.Getwd()
+			defer os.Chdir(oldwd)
+			os.Chdir(dir)
+			if err := os.MkdirAll("src", 0o755); err != nil {
+				t.Fatal(err)
+			}
+			os.WriteFile("src/shelly.yml", []byte(tc.config), 0o644)
+			for name, content := range tc.files {
+				os.WriteFile("src/"+name, []byte(content), 0o644)
+			}
+			_, err := readConfigE()
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantSub)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantSub)
+			}
+		})
+	}
+}
+
+func TestConfigImportDuplicateCommand(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	if err := os.MkdirAll("src", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile("src/shelly.yml", []byte("name: cli\ncommands:\n  - import: a.yml\n  - import: b.yml\n"), 0o644)
+	os.WriteFile("src/a.yml", []byte("name: dup\nhelp: A\n"), 0o644)
+	os.WriteFile("src/b.yml", []byte("name: dup\nhelp: B\n"), 0o644)
+
+	cfg, err := readConfigE()
+	if err != nil {
+		t.Fatalf("readConfigE: %v", err)
+	}
+	errs := cfg.validateSemantics()
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "duplicate command name") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected duplicate command name error, got %v", errs)
+	}
+}
+
+func TestConfigImportRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	if err := os.MkdirAll("src", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile("src/shelly.yml", []byte("name: cli\ncommands:\n  - import: download.yml\n"), 0o644)
+	os.WriteFile("src/download.yml", []byte(`name: download
+help: Download a file
+args:
+  - name: source
+    required: true
+flags:
+  import: common_flags.yml
+`), 0o644)
+	os.WriteFile("src/common_flags.yml", []byte("- long: --force\n  short: -f\n"), 0o644)
+	os.WriteFile("src/download_command.sh", []byte("echo \"downloading $source force=$force\"\n"), 0o644)
+
+	cfg, err := readConfigE()
+	if err != nil {
+		t.Fatalf("readConfigE: %v", err)
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	out, err := exec.Command("sh", "./cli", "download", "--force", "http://x").CombinedOutput()
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	if got := string(out); !strings.Contains(got, "downloading http://x force=1") {
+		t.Errorf("unexpected output: %q", got)
+	}
+}
+
+// TestDepsVarName covers the stable dependency-variable naming rule.
+func TestDepsVarName(t *testing.T) {
+	cases := map[string]string{
+		"curl":        "curl",
+		"http_client": "http_client",
+		"http-client": "http_client",
+		"node.js":     "node_js",
+		"a b":         "a_b",
+	}
+	for in, want := range cases {
+		if got := depsVarName(in); got != want {
+			t.Errorf("depsVarName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestDepsGetHelperRuntime checks deps_get works in POSIX sh for a single dep
+// and returns 1 (printing nothing) for an unknown name.
+func TestDepsGetHelperRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: run
+    help: Run
+    dependencies:
+      - name: sh
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/run_command.sh", []byte(`p="$(deps_get sh)"
+echo "sh=$p"
+if deps_get nope; then echo "found"; else echo "missing"; fi`+"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	out, err := exec.Command("sh", "./myapp", "run").CombinedOutput()
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "sh=/") {
+		t.Errorf("deps_get sh did not resolve a path: %q", got)
+	}
+	if !strings.Contains(got, "missing") {
+		t.Errorf("deps_get for unknown name should return 1: %q", got)
+	}
+}
+
+// TestDepsGetORListRuntime checks deps_get resolves an OR-list to whichever
+// candidate command is actually available.
+func TestDepsGetORListRuntime(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: run
+    help: Run
+    dependencies:
+      http_client:
+        command: [definitely_missing_xyz, sh]
+        help: HTTP client
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	os.WriteFile("src/run_command.sh", []byte(`echo "client=$(deps_get http_client)"
+echo "sh=$(deps_get sh)"
+echo "raw=$deps_sh"`+"\n"), 0o644)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	out, err := exec.Command("sh", "./myapp", "run").CombinedOutput()
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "client=/") {
+		t.Errorf("deps_get http_client did not resolve via OR-list: %q", got)
+	}
+	if !strings.Contains(got, "sh=/") {
+		t.Errorf("deps_get sh (candidate alias) did not resolve: %q", got)
+	}
+	if !strings.Contains(got, "raw=/") {
+		t.Errorf("deps_<name> scalar missing: %q", got)
+	}
+}
+
+// TestNoDepsGetWithoutDeps ensures the helper is only emitted when needed.
+func TestNoDepsGetWithoutDeps(t *testing.T) {
+	yaml := `
+name: myapp
+version: 1.0.0
+commands:
+  - name: run
+    help: Run
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	if strings.Contains(out, "deps_get()") {
+		t.Errorf("deps_get should not be emitted when there are no dependencies")
+	}
+}
+
+// TestInspectArgsNestedCommands ensures the generated inspect_args() collects
+// flags/args/catch_all from nested commands, not just top-level ones, and reads
+// them with ${var:-} so it is safe under set -u.
+func TestInspectArgsNestedCommands(t *testing.T) {
+	yaml := `
+name: gup
+version: 1.0.0
+commands:
+  - name: install
+    help: Install things
+    commands:
+      - name: go
+        help: Install Go
+        args:
+          - name: goversion
+            required: true
+        flags:
+          - long: --force
+            short: -f
+        catch_all:
+          label: extras
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	out, err := cfg.shellGenToString()
+	if err != nil {
+		t.Fatalf("shellGenToString: %v", err)
+	}
+	for _, want := range []string{"inspect_args() {", "  goversion: %s", "  force: %s", "  other_args: %s"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("inspect_args missing %q", want)
+		}
+	}
+	if !strings.Contains(out, "${goversion:-}") {
+		t.Errorf("inspect_args should read vars with :- for set -u safety")
 	}
 }
