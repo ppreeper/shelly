@@ -36,20 +36,21 @@ var defaultMessages = map[string]string{
 	// Usage helpers.
 	"required":   "(required)",
 	"repeatable": "(repeatable)",
-	"default":    "(default: %{value})",
-	"allowed":    "[%{values}]",
+	"default":    "Default: %{value}",
+	"allowed":    "Allowed: %{values}",
 
 	// Fixed flags help text.
 	"help_flag_text":    "Show this help",
-	"version_flag_text": "Show version",
+	"version_flag_text": "Show version number",
 
 	// Error messages.
-	"invalid_flag":                          "Unknown flag: %s",
-	"invalid_command":                       "Unknown command: %s",
-	"invalid_subcommand":                    "Unknown subcommand: %s",
+	"invalid_flag":                          "invalid option: %s",
+	"invalid_command":                       "invalid command: %s",
+	"invalid_subcommand":                    "invalid command: %s",
 	"too_many_arguments":                    "Error: too many arguments: %s",
-	"missing_required_flag":                 "Error: %{name} is required",
-	"missing_required_argument":             "Error: <%{name}> is required",
+	"missing_required_flag":                 "missing required flag: %{name}",
+	"missing_required_argument":             "missing required argument: %{name}",
+	"usage_error":                           "usage: %{usage}",
 	"disallowed_flag":                       "Error: %{name} must be one of: %{allowed}",
 	"disallowed_argument":                   "Error: <%{name}> must be one of: %{allowed}",
 	"disallowed_environment_variable":       "Error: %{name} must be one of: %{allowed}",

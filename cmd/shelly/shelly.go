@@ -9,17 +9,33 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Make version a variable (rather than a constant) and set its value to vcs.Version().
-var (
-	version = vcs.Version()
-)
+// version is overridden at build time with:
+//
+//	go build -ldflags "-X main.version=v1.2.3"
+//
+// When it is left at its default (or built without ldflags) the version
+// recorded in the module build info is used instead.
+var version = "dev"
+
+// resolveVersion returns the ldflags-provided version when set, otherwise the
+// version embedded in the module build info (e.g. `go install ...@latest`).
+func resolveVersion() string {
+	if version != "" && version != "dev" {
+		return version
+	}
+	if v := vcs.Version(); v != "" && v != "(devel)" {
+		return v
+	}
+	return version
+}
 
 func main() {
 	templates := templates.Files
-	app := newApp("shelly", "sh cli generator", version, templates)
+	app := newApp("shelly", "sh cli generator", resolveVersion(), templates)
 	rootCmd := &cobra.Command{
 		Use:          app.Name,
 		Short:        app.Usage,
+		Version:      app.Version,
 		SilenceUsage: false,
 	}
 

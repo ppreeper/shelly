@@ -1,0 +1,63 @@
+# GoReleaser configuration (v2).
+# Docs: https://goreleaser.com
+#
+# Local dry run (no publish):
+#   goreleaser release --snapshot --clean
+version: 2
+
+project_name: shelly
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: shelly
+    main: ./cmd/shelly
+    binary: shelly
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    # main.version is a package-level string var, so the linker can stamp the
+    # release version over the debug.ReadBuildInfo fallback.
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  draft: false
+  prerelease: auto
+  footer: |
+    **Full Changelog**: https://github.com/ppreeper/shelly/compare/{{ .PreviousTag }}...{{ .Tag }}
