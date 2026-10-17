@@ -8,6 +8,12 @@ Inspired by [bashly](https://bashly.dannyb.co), shelly targets strict POSIX comp
 
 ## Installation
 
+Prebuilt binaries for Linux and macOS (amd64/arm64) are available on the
+[releases page](https://github.com/ppreeper/shelly/releases). Download the archive for
+your platform, extract it, and place `shelly` somewhere on your `PATH`.
+
+Or install with Go:
+
 ```sh
 go install github.com/ppreeper/shelly@latest
 ```

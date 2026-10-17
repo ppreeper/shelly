@@ -32,6 +32,7 @@ go.work.sum
 # .vscode/
 
 tmp/
+dist/
 /cli
 /gup
 /shelly
