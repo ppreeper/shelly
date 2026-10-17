@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -145,7 +146,7 @@ func TestRequiredFlag(t *testing.T) {
 		t.Fatalf("shellGen: %v", err)
 	}
 	s := readGenerated(t, "mytool")
-	if !strings.Contains(s, "--token is required") {
+	if !strings.Contains(s, "missing required flag: --token TOKEN") {
 		t.Fatal("missing required-flag error message")
 	}
 }
@@ -173,7 +174,7 @@ func TestRequiredArg(t *testing.T) {
 		t.Fatalf("shellGen: %v", err)
 	}
 	s := readGenerated(t, "mytool")
-	if !strings.Contains(s, "<target> is required") {
+	if !strings.Contains(s, "missing required argument: TARGET") {
 		t.Fatal("missing required-arg error message")
 	}
 }
@@ -613,6 +614,45 @@ func TestGroup(t *testing.T) {
 	}
 }
 
+// TestNestedGroup: nested (parent command) usage groups its sub-commands,
+// matching the root usage behaviour. A parent's children with the same group
+// must be listed under a "<group> Commands:" caption rather than a flat list.
+func TestNestedGroup(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{
+		Name:    "mytool",
+		Version: "0.1.0",
+		Commands: []Command{
+			{Name: "install", Help: "Install things", Commands: []Command{
+				{Name: "go", Help: "Go language", Group: "Language Development"},
+				{Name: "zig", Help: "Zig language", Group: "Language Development"},
+				{Name: "misc", Help: "Ungrouped tool"},
+			}},
+		},
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	s := readGenerated(t, "mytool")
+	if !strings.Contains(s, "Language Development Commands:") {
+		t.Fatal("missing nested group caption in parent usage")
+	}
+	// The two grouped children must appear together inside the parent usage.
+	if !strings.Contains(s, "  go ") || !strings.Contains(s, "  zig ") {
+		t.Fatal("grouped nested commands missing from parent usage")
+	}
+	if out, err := exec.Command("sh", "-n", "./mytool").CombinedOutput(); err != nil {
+		t.Fatalf("sh -n failed: %v\n%s", err, out)
+	}
+}
+
 // TestPrivateFlag: private flag excluded from visible usage; inside reveal block only.
 func TestPrivateFlag(t *testing.T) {
 	dir := t.TempDir()
@@ -996,7 +1036,7 @@ func TestRootArgParsing(t *testing.T) {
 	if !strings.Contains(s, "root_parse()") {
 		t.Fatal("missing root_parse()")
 	}
-	if !strings.Contains(s, "<source> is required") {
+	if !strings.Contains(s, "missing required argument: SOURCE") {
 		t.Fatal("missing required check for source arg")
 	}
 }
@@ -1306,6 +1346,260 @@ func TestFunctionOverride(t *testing.T) {
 	}
 	if !strings.Contains(s, "do_deploy_parse()") {
 		t.Fatal("missing do_deploy_parse() function")
+	}
+}
+
+var usageDefRe = regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_]*)\(\)`)
+var usageRefRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*_usage)\b`)
+
+// assertUsageRefsDefined fails if any <name>_usage function is referenced but
+// never defined. Every command parser calls its usage function on error/help, so
+// an undefined reference is a runtime bug.
+func assertUsageRefsDefined(t *testing.T, s string) {
+	t.Helper()
+	defs := map[string]bool{}
+	for _, m := range usageDefRe.FindAllStringSubmatch(s, -1) {
+		defs[m[1]] = true
+	}
+	for _, m := range usageRefRe.FindAllStringSubmatch(s, -1) {
+		if m[1] == "long_usage" {
+			continue // bashly-style flag variable, not a usage function
+		}
+		if !defs[m[1]] {
+			t.Fatalf("usage function %q is referenced but not defined", m[1])
+		}
+	}
+}
+
+// assertValidFuncNames fails if the script defines any function whose name is not
+// a valid POSIX shell identifier (e.g. contains a hyphen).
+func assertValidFuncNames(t *testing.T, s string) {
+	t.Helper()
+	for _, m := range usageDefRe.FindAllStringSubmatch(s, -1) {
+		if !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`).MatchString(m[1]) {
+			t.Fatalf("invalid shell function name %q", m[1])
+		}
+	}
+}
+
+// TestHyphenatedCommandName: a command whose name contains a hyphen must generate
+// valid shell identifiers (hyphens become underscores) while the user-facing name
+// keeps the hyphen. Regression test for "Bad function name" syntax errors.
+func TestHyphenatedCommandName(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{
+		Name:    "mytool",
+		Version: "0.1.0",
+		Commands: []Command{
+			{Name: "go-blueprint", Args: []Arg{{Name: "dir"}}},
+		},
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	s := readGenerated(t, "mytool")
+	for _, want := range []string{
+		"go_blueprint_parse()",
+		"go_blueprint_command()",
+		"mytool_go_blueprint_usage()",
+		"go-blueprint) go_blueprint_command",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in generated script", want)
+		}
+	}
+	for _, bad := range []string{"go-blueprint_parse()", "go-blueprint_command()", "go-blueprint_usage()"} {
+		if strings.Contains(s, bad) {
+			t.Fatalf("generated script contains invalid function definition %q", bad)
+		}
+	}
+	assertValidFuncNames(t, s)
+	assertUsageRefsDefined(t, s)
+	if out, err := exec.Command("sh", "-n", "./mytool").CombinedOutput(); err != nil {
+		t.Fatalf("sh -n failed: %v\n%s", err, out)
+	}
+}
+
+// TestBodyScaffold: missing body files are created with bashly's scaffold and
+// that scaffold is embedded verbatim in the generated script.
+func TestBodyScaffold(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{
+		Name:     "mytool",
+		Version:  "0.1.0",
+		Commands: []Command{{Name: "run", Help: "Run"}},
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+
+	want := "echo \"# This file is located at 'src/run_command.sh'.\"\n" +
+		"echo \"# It contains the implementation for the 'mytool run' command.\"\n" +
+		"echo \"# The code you write here will be wrapped by a function named 'mytool_run_command()'.\"\n" +
+		"echo \"# Feel free to edit this file; your changes will persist when regenerating.\"\n" +
+		"inspect_args\n"
+	got, err := os.ReadFile("src/run_command.sh")
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(got) != want {
+		t.Fatalf("scaffold mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+
+	// Editing the body must survive regeneration.
+	if err := os.WriteFile("src/run_command.sh", []byte("echo custom\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen (2): %v", err)
+	}
+	got, _ = os.ReadFile("src/run_command.sh")
+	if string(got) != "echo custom\n" {
+		t.Fatalf("regeneration clobbered edited body: %q", got)
+	}
+}
+
+// TestBodyScaffoldHyphenated: the file path/display keep the raw command name
+// while the wrapped function name is sanitized to a valid shell identifier.
+func TestBodyScaffoldHyphenated(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{
+		Name:     "mytool",
+		Version:  "0.1.0",
+		Commands: []Command{{Name: "go-blueprint", Help: "Blueprint"}},
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	got, err := os.ReadFile("src/go-blueprint_command.sh")
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	for _, want := range []string{
+		"'src/go-blueprint_command.sh'",
+		"'mytool go-blueprint' command",
+		"'mytool_go_blueprint_command()'",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("scaffold missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestBodyScaffoldRoot: root-only mode uses src/root_command.sh, displays only
+// the app name, and wraps in root_command().
+func TestBodyScaffoldRoot(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{
+		Name:    "rootonly",
+		Version: "0.1.0",
+		Args:    []Arg{{Name: "file"}},
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	got, err := os.ReadFile("src/root_command.sh")
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	for _, want := range []string{
+		"'src/root_command.sh'",
+		"'rootonly' command",
+		"'root_command()'",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("scaffold missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestNestedCommandUsageDefined: nested leaf commands must each get a usage
+// function, otherwise their parsers reference an undefined <app>_<path>_usage.
+func TestNestedCommandUsageDefined(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{
+		Name:    "mytool",
+		Version: "0.1.0",
+		Commands: []Command{
+			{
+				Name: "remote",
+				Commands: []Command{
+					{Name: "add", Args: []Arg{{Name: "url", Required: true}}},
+					{Name: "remove"},
+				},
+			},
+		},
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	s := readGenerated(t, "mytool")
+	for _, want := range []string{
+		"mytool_remote_add_usage()",
+		"mytool_remote_remove_usage()",
+		"mytool_remote_usage()",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in generated script", want)
+		}
+	}
+	assertUsageRefsDefined(t, s)
+	if out, err := exec.Command("sh", "-n", "./mytool").CombinedOutput(); err != nil {
+		t.Fatalf("sh -n failed: %v\n%s", err, out)
+	}
+}
+
+// TestFunctionOverrideUsageDefined: a command using function: override must have
+// its usage function named after the override, matching what the parser calls.
+func TestFunctionOverrideUsageDefined(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+
+	cfg := &ShellyCfg{
+		Name:    "mytool",
+		Version: "0.1.0",
+		Commands: []Command{
+			{Name: "deploy", Function: "do_deploy", Args: []Arg{{Name: "env", Required: true}}},
+		},
+	}
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+	s := readGenerated(t, "mytool")
+	if !strings.Contains(s, "mytool_do_deploy_usage()") {
+		t.Fatal("missing mytool_do_deploy_usage()")
+	}
+	assertUsageRefsDefined(t, s)
+	if out, err := exec.Command("sh", "-n", "./mytool").CombinedOutput(); err != nil {
+		t.Fatalf("sh -n failed: %v\n%s", err, out)
 	}
 }
 
@@ -1947,15 +2241,22 @@ func TestGlobalFlags(t *testing.T) {
 		t.Fatalf("shellGen: %v", err)
 	}
 	s := readGenerated(t, "mytool")
-	// global flag parser must exist
-	if !strings.Contains(s, "mytool_parse()") {
-		t.Fatal("expected mytool_parse() for global flags")
+	// global flags are parsed inline in run() and peeled off before dispatch.
+	runIdx := strings.Index(s, "\nrun() {")
+	if runIdx == -1 {
+		t.Fatal("missing run()")
 	}
-	// global flag parser must be defined/called before command dispatch
-	parseIdx := strings.Index(s, "mytool_parse()")
-	dispatchIdx := strings.Index(s, "build_command")
-	if parseIdx > dispatchIdx {
-		t.Fatal("global flag parser must be called before command dispatch")
+	runBody := s[runIdx:]
+	flagIdx := strings.Index(runBody, "--verbose)")
+	dispatchIdx := strings.Index(runBody, "build) ")
+	if flagIdx == -1 {
+		t.Fatal("run() must parse the global flag --verbose")
+	}
+	if dispatchIdx == -1 {
+		t.Fatal("run() must dispatch the build command")
+	}
+	if flagIdx > dispatchIdx {
+		t.Fatal("global flags must be parsed before command dispatch")
 	}
 }
 
@@ -3713,12 +4014,12 @@ func TestCatchAllRequired(t *testing.T) {
 	if !strings.Contains(body, `[ -z "${other_args}" ]`) {
 		t.Fatal("missing required other_args check")
 	}
-	if !strings.Contains(body, "Error: <targets> is required") {
+	if !strings.Contains(body, "missing required argument: TARGETS...") {
 		t.Fatal("missing required error message with label")
 	}
 	// must call usage on error
-	if !strings.Contains(body, "mytool_run_usage") {
-		t.Fatal("missing usage call in required catch_all error path")
+	if !strings.Contains(body, "usage: mytool run") {
+		t.Fatal("missing one-line usage in required catch_all error path")
 	}
 }
 
@@ -3741,7 +4042,7 @@ func TestCatchAllRequiredDefaultLabel(t *testing.T) {
 		t.Fatalf("shellGen: %v", err)
 	}
 	s := readGenerated(t, "mytool")
-	if !strings.Contains(s, "Error: <extra> is required") {
+	if !strings.Contains(s, "missing required argument: EXTRA...") {
 		t.Fatal("missing default label 'extra' in required catch_all error message")
 	}
 }
@@ -4149,8 +4450,13 @@ func TestHelpMultilineRoot(t *testing.T) {
 	if !strings.Contains(out, `myapp - first line`) {
 		t.Fatal("expected first help line as summary")
 	}
-	if !strings.Contains(out, `"second line"`) {
-		t.Fatal("expected second help line as separate echo")
+	// bashly layout: multi-line help is shown in full (indented) only in long
+	// usage; the short form shows just the first line.
+	if !strings.Contains(out, `if [ -n "$long_usage" ]`) {
+		t.Fatal("expected multi-line help to gate on long_usage")
+	}
+	if !strings.Contains(out, `"  second line"`) {
+		t.Fatal("expected second help line as a separate indented echo")
 	}
 }
 
@@ -4174,8 +4480,8 @@ func TestHelpMultilineCommand(t *testing.T) {
 	if !strings.Contains(out, "deploy stuff") {
 		t.Fatal("expected first help line in command listing")
 	}
-	// usage function should have extra echo for second line
-	if !strings.Contains(out, `"More details here"`) {
+	// usage function should have extra echo for second line (long usage form)
+	if !strings.Contains(out, `"  More details here"`) {
 		t.Fatal("expected second help line as separate echo in command usage")
 	}
 }
@@ -4738,8 +5044,8 @@ func TestExpandMessage(t *testing.T) {
 
 // TestMessageDefaultsGenerated checks the built-in messages are emitted.
 func TestMessageDefaultsGenerated(t *testing.T) {
-	s := (&ShellyCfg{Name: "mytool"}).generateParser("mytool", Command{Name: "mytool"}, true)
-	if !strings.Contains(s, `Unknown flag: $1`) {
+	s := (&ShellyCfg{Name: "mytool"}).generateParser(Command{Name: "mytool"}, true, "mytool_usage", "mytool")
+	if !strings.Contains(s, `invalid option: $1`) {
 		t.Fatalf("default invalid_flag missing:\n%s", s)
 	}
 }
@@ -4797,7 +5103,7 @@ missing_required_argument: "need <%{name}>"
 	if err == nil {
 		t.Fatalf("expected missing-arg failure, got success:\n%s", out2)
 	}
-	if !strings.Contains(string(out2), "need <source>") {
+	if !strings.Contains(string(out2), "need <SOURCE>") {
 		t.Fatalf("custom missing_required_argument not used:\n%s", out2)
 	}
 }
@@ -5656,12 +5962,69 @@ commands:
 	if err != nil {
 		t.Fatalf("shellGenToString: %v", err)
 	}
-	for _, want := range []string{"inspect_args() {", "  goversion: %s", "  force: %s", "  other_args: %s"} {
+	for _, want := range []string{
+		"inspect_args() {",
+		"_inspect_collect_install_go() {",
+		`'goversion' "$goversion"`,
+		`'--force' "$force"`,
+		`if [ -n "${other_args}" ]; then _inspect_other_section`,
+		"    install_go)",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("inspect_args missing %q", want)
 		}
 	}
-	if !strings.Contains(out, "${goversion:-}") {
-		t.Errorf("inspect_args should read vars with :- for set -u safety")
+	if !strings.Contains(out, "${goversion+x}") {
+		t.Errorf("inspect_args should detect set vars with ${var+x} for set -u safety")
+	}
+}
+
+// TestInspectArgsRuntime verifies at runtime that inspect_args reflects the
+// command that actually ran: a command with no flags/args prints "args: none",
+// even when another command in the same tool declares an argument. Regression
+// test for the static-inspector bug where every command leaked every var.
+func TestInspectArgsRuntime(t *testing.T) {
+	yaml := `
+name: mytool
+version: 1.0.0
+commands:
+  - name: alpha
+    help: Alpha
+  - name: beta
+    help: Beta
+    args:
+      - name: font
+`
+	var cfg ShellyCfg
+	if err := parseYAML([]byte(yaml), &cfg); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	dir := t.TempDir()
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	os.Chdir(dir)
+	os.MkdirAll("src", 0o755)
+	if err := cfg.shellGen(); err != nil {
+		t.Fatalf("shellGen: %v", err)
+	}
+
+	out, err := exec.Command("sh", "./mytool", "alpha").CombinedOutput()
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "args: none") {
+		t.Fatalf("expected 'args: none' for command with no args:\n%s", out)
+	}
+	if strings.Contains(string(out), "font:") || strings.Contains(string(out), "'font'") {
+		t.Fatalf("command alpha must not report another command's arg:\n%s", out)
+	}
+
+	// beta declares the `font` arg; running it should report that arg.
+	out, err = exec.Command("sh", "./mytool", "beta", "Iosevka").CombinedOutput()
+	if err != nil {
+		t.Fatalf("run beta: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "- ${args[font]} = Iosevka") {
+		t.Fatalf("expected font arg reported for beta:\n%s", out)
 	}
 }
